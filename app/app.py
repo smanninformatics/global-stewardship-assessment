@@ -258,6 +258,167 @@ DOMAIN_TITLES = {
 }
 MAX_PER_ITEM = 5.0
 
+# ---------- Action plan parser ----------
+
+import re
+from datetime import date
+
+PHASES = [("short", "Phase 1 — Quick wins (0–3 months)"),
+          ("medium", "Phase 2 — Build capacity (3–12 months)"),
+          ("long", "Phase 3 — Advance & sustain (12+ months)")]
+PRIO_RANK = {"high": 0, "medium": 1, "low": 2}
+
+def parse_action_template(text):
+    meta = {"tiers": [("foundational", 0, 40), ("developing", 40, 70), ("advanced", 70, 100.01)],
+            "domain_priority": [1, 2, 4, 5, 3]}
+    m = re.search(r"@@meta\s*(.*?)@@endmeta", text, re.DOTALL)
+    if m:
+        for line in m.group(1).splitlines():
+            line = line.strip()
+            if line.startswith("tiers:"):
+                tiers = []
+                for part in line[6:].split("|"):
+                    mm = re.match(r"\s*(\w+)\s+(\d+)-(\d+)", part)
+                    if mm:
+                        hi = float(mm.group(3)) + (0.01 if mm.group(3) == "100" else 0)
+                        tiers.append((mm.group(1), float(mm.group(2)), hi))
+                if tiers:
+                    meta["tiers"] = tiers
+            elif line.startswith("domain_priority:"):
+                nums = [int(x) for x in re.findall(r"\d+", line)]
+                if nums:
+                    meta["domain_priority"] = nums
+        text = text[m.end():]
+    recs = []
+    for part in re.split(r"(?m)^@@rec\s+", text)[1:]:
+        header, _, body = part.partition("\n")
+        hm = dict(re.findall(r"(\w+)=(\S+)", header))
+        recs.append({
+            "id": hm.get("id", ""),
+            "domain": int(hm.get("domain", "0")),
+            "tier": [t for t in hm.get("tier", "").split(",") if t],
+            "when": hm.get("when", "short"),
+            "priority": hm.get("priority", "med"),
+            "show_if": hm.get("show_if", ""),
+            "body": body.strip(),
+        })
+    return meta, recs
+
+def _tier_of(pct, tiers):
+    for name, lo, hi in tiers:
+        if lo <= pct < hi:
+            return name
+    return tiers[-1][0]
+
+def _eval_condition(expr, env):
+    if not expr:
+        return True
+    for term in expr.split("&"):
+        mm = re.match(r"\s*([\w.]+)\s*(==|!=|<=|>=|<|>)\s*(.+?)\s*$", term)
+        if not mm:
+            return False
+        left, op, rhs = env.get(mm.group(1)), mm.group(2), mm.group(3)
+        if left is None:
+            return False
+        try:
+            l, r, num = float(left), float(rhs), True
+        except (ValueError, TypeError):
+            l, r, num = str(left), str(rhs), False
+        ok = {"==": l == r, "!=": l != r,
+              "<": num and l < r, "<=": num and l <= r,
+              ">": num and l > r, ">=": num and l >= r}[op]
+        if not ok:
+            return False
+    return True
+
+def _focus_domains(dinfo, dprio):
+    order = {d: i for i, d in enumerate(dprio)}
+    def key(d):
+        info = dinfo[d]
+        enabler = d in (1, 2) and info["tier"] == "foundational"
+        return (0 if enabler else 1, info["pct"], order.get(d, 99))
+    return sorted(dinfo.keys(), key=key)
+
+def _rationale(d, info):
+    if d in (1, 2) and info["tier"] == "foundational":
+        return "foundational enabler — must be in place to sustain gains elsewhere"
+    if info["tier"] == "foundational":
+        return "largest gap; establish core structures first"
+    if info["tier"] == "developing":
+        return "partial capability — consolidate and expand"
+    return "advanced — focus on sustaining and refining"
+
+def build_action_plan(per_item, domain_rows, ctx, template_text, facility=""):
+    meta, recs = parse_action_template(template_text)
+    tiers, dprio = meta["tiers"], meta["domain_priority"]
+
+    dinfo, oe, op = {}, 0.0, 0.0
+    for dnum, name, de, dp in domain_rows:
+        pct = de / dp * 100 if dp else 0
+        dinfo[dnum] = {"pct": pct, "tier": _tier_of(pct, tiers),
+                       "name": name, "earned": de, "poss": dp}
+        oe += de; op += dp
+    overall_pct = oe / op * 100 if op else 0
+    overall_tier = _tier_of(overall_pct, tiers)
+
+    env = {}
+    for n, (e, p) in per_item.items():
+        env[f"item{n}"] = 0 if e is None else e
+    for d, i in dinfo.items():
+        env[f"domain{d}"] = i["pct"]
+    env["overall"] = overall_pct
+    for k, v in (ctx or {}).items():
+        env[f"ctx.{k}"] = v
+
+    def matches(r):
+        tier = overall_tier if r["domain"] == 0 else dinfo.get(r["domain"], {}).get("tier")
+        if r["tier"] and tier not in r["tier"]:
+            return False
+        return _eval_condition(r["show_if"], env)
+
+    selected = [r for r in recs if matches(r)]
+    focus = _focus_domains(dinfo, dprio)
+    dorder = {d: i for i, d in enumerate(focus)}
+
+    out = []
+    out.append(f"# G-ASET Antibiotic Stewardship Action Plan"
+               + (f" — {facility}" if facility else ""))
+    out.append(f"*Generated {date.today().isoformat()}. "
+               f"**Draft decision‑support output for SME review** — not a substitute for "
+               f"clinical judgment or local guideline alignment.*\n")
+
+    out.append("## Summary")
+    out.append(f"- **Overall:** {oe:g} / {op:g} ({overall_pct:.0f}%) — **{overall_tier.title()}**\n")
+    out.append("| Domain | Score | % | Tier |")
+    out.append("|---|---|---|---|")
+    for d in sorted(dinfo):
+        i = dinfo[d]
+        out.append(f"| {i['name']} | {i['earned']:g}/{i['poss']:g} | {i['pct']:.0f}% | {i['tier'].title()} |")
+    out.append("")
+
+    out.append("## Recommended focus sequence")
+    for rank, d in enumerate(focus, 1):
+        i = dinfo[d]
+        out.append(f"{rank}. **{i['name']}** ({i['pct']:.0f}%, {i['tier'].title()}) — {_rationale(d, i)}")
+    out.append("")
+
+    for phase_key, phase_title in PHASES:
+        items = [r for r in selected if r["when"] == phase_key]
+        if not items:
+            continue
+        items.sort(key=lambda r: (PRIO_RANK.get(r["priority"], 1),
+                                  dorder.get(r["domain"], 99), r["id"]))
+        out.append(f"## {phase_title}")
+        for r in items:
+            dom = dinfo.get(r["domain"], {}).get("name", "Cross-cutting") if r["domain"] else "Cross-cutting"
+            tag = f"`[{dom.split(':')[0]} · {r['priority'].upper()}]`"
+            body = re.sub(r"^###\s*", f"### {tag} ", r["body"], count=1)
+            out.append(body + "\n")
+
+    if not selected:
+        out.append("_No recommendations matched. Check the template's tier/context bindings._")
+    return "\n".join(out)
+
 # ---------- Language detection ----------
 def detect_language(text):
     sample = text[:6000]
@@ -751,3 +912,46 @@ with ui.card():
                     core_ui.tags.th("Value"), core_ui.tags.th("States"))),
                 core_ui.tags.tbody(*body),
                 class_="table table-sm table-striped", style="font-size:0.8em;"))
+
+# -------- Action Plan UI ---------------
+
+# Put the template string here (or load from a bundled .md).
+ACTION_PLAN_TEMPLATE = open("ga_action_plan.md", encoding="utf-8").read()
+
+with ui.card():
+    ui.card_header("🧭 Action Plan Generator")
+
+    ui.input_select("ctx_setting", "Resource setting",
+                    {"resource_limited": "Resource-limited", "well_resourced": "Well-resourced"})
+    ui.input_select("ctx_micro", "Clinical microbiology access",
+                    {"none": "None", "offsite": "Off-site / referral", "onsite": "On-site"})
+    ui.input_select("ctx_ehr", "Electronic health record",
+                    {"none": "None", "partial": "Partial", "full": "Full"})
+    ui.input_select("ctx_team", "Formal AMS team",
+                    {"none": "None", "informal": "Informal", "formal": "Formal"})
+    ui.input_select("ctx_funding", "Dedicated AMS time/funding",
+                    {"none": "None", "some": "Some", "dedicated": "Dedicated"})
+    ui.input_select("ctx_national", "National AMS policy to align to",
+                    {"no": "No", "yes": "Yes"})
+
+    @reactive.calc
+    def action_plan_md():
+        per, domains, te, tp = all_scores()
+        ctx = {"setting": input.ctx_setting(), "micro": input.ctx_micro(),
+               "ehr": input.ctx_ehr(), "team": input.ctx_team(),
+               "funding": input.ctx_funding(), "national": input.ctx_national()}
+        return build_action_plan(per, domains, ctx, ACTION_PLAN_TEMPLATE)
+
+    @render.ui
+    def action_plan_view():
+        if not parsed_domains.get():
+            return core_ui.p("Upload a recognized G-ASET PDF to generate a plan.",
+                             class_="text-muted")
+        return core_ui.markdown(action_plan_md())
+
+    @render.download(filename="gaset_action_plan.md")
+    def download_action_plan():
+        yield action_plan_md()
+
+    core_ui.download_button("download_action_plan", "⬇️ Download action plan (.md)",
+                            class_="btn-sm btn-primary")
