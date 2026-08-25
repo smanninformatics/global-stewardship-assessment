@@ -915,8 +915,33 @@ with ui.card():
 
 # -------- Action Plan UI ---------------
 
-# Put the template string here (or load from a bundled .md).
-ACTION_PLAN_TEMPLATE = open("ga_action_plan.md", encoding="utf-8").read()
+
+from pathlib import Path
+
+try:
+    APP_DIR = Path(__file__).resolve().parent
+except NameError:            # __file__ can be undefined in some contexts
+    APP_DIR = Path.cwd()
+
+TEMPLATE_PATH = APP_DIR / "ga_action_plan.md"
+
+_FALLBACK_TEMPLATE = """@@meta
+tiers: foundational 0-40 | developing 40-70 | advanced 70-100
+domain_priority: 1 2 4 5 3
+@@endmeta
+
+@@rec id=FALLBACK domain=0 when=short priority=high
+### Template file not found
+- `action_plan_template.md` was not bundled with the app. Add it to the app folder.
+"""
+
+def load_action_template():
+    try:
+        return TEMPLATE_PATH.read_text(encoding="utf-8")   # utf-8 for em-dashes / AWaRe etc.
+    except Exception:
+        return _FALLBACK_TEMPLATE
+
+ACTION_PLAN_TEMPLATE = load_action_template()
 
 with ui.card():
     ui.card_header("🧭 Action Plan Generator")
