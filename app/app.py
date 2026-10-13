@@ -1,4 +1,5 @@
-# G-ASET Multilingual PDF Assessment — deterministic field-name mapping (#3 complete)
+# G-ASET Multilingual PDF Assessment — deterministic field-name mapping
+# Tabs: Assessment | Scores | Action Plan | Trends (multi-assessment time series) | Diagnostics
 # Runs fully in-browser (Pyodide / shinylive / GitHub Pages). Pure-Python deps only.
 #
 # shinylive requirements: pypdf   (langdetect optional)
@@ -6,6 +7,9 @@
 import re
 import io
 import csv
+import html as _html
+from datetime import date, timedelta
+from pathlib import Path
 
 from shiny.express import input, render, ui
 from shiny import reactive, ui as core_ui
@@ -235,16 +239,14 @@ SCORING = {
     11: {"rule": "triad"},
     14: {"rule": "triad"},
 }
-# 0-based index of the "Not applicable" option (excluded from counts)
 NA_INDEX = {4: 14, 9: 9, 11: 6, 14: 5, 18: 6, 19: 5, 31: 14, 32: 5,
             37: 7, 38: 3, 43: 4, 54: 2, 58: 11, 59: 5}
-# triad membership (0-based) — physician / pharmacist / microbiologist
 TRIAD = {
     6:  {"phys": {1}, "pharm": {3, 4, 5}, "micro": {9}, "na": 0},
     11: {"phys": {0}, "pharm": {1, 2, 3}, "micro": {5}, "na": 6},
     14: {"phys": {0}, "pharm": {1, 2, 3}, "micro": {4}, "na": 5},
 }
-REQUIRED_IDX = {32: {0, 1, 2, 3}}  # first-line, dose, duration, alternative
+REQUIRED_IDX = {32: {0, 1, 2, 3}}
 
 DOMAIN_ITEMS = {1: range(1, 13), 2: range(13, 26), 3: range(26, 31),
                 4: range(31, 52), 5: range(52, 67)}
@@ -256,13 +258,14 @@ DOMAIN_TITLES = {
     4: "Domain 4: Antibiotic Stewardship Actions",
     5: "Domain 5: Antibiotic Use Tracking, Monitoring, & Reporting",
 }
+DOMAIN_SHORT = {1: "D1 Leadership", 2: "D2 Resources", 3: "D3 Education",
+                4: "D4 Actions", 5: "D5 Tracking"}
+ITEM_DOMAIN = {n: d for d, items in DOMAIN_ITEMS.items() for n in items}
+ITEM_FALLBACK = {6: "6. Antibiotic stewardship team composition (6A)",
+                 35: "35. Stewardship interventions currently performed (35A)"}
 MAX_PER_ITEM = 5.0
 
 # ---------- Action plan parser ----------
-
-import re
-from datetime import date
-
 PHASES = [("short", "Phase 1 — Quick wins (0–3 months)"),
           ("medium", "Phase 2 — Build capacity (3–12 months)"),
           ("long", "Phase 3 — Advance & sustain (12+ months)")]
@@ -468,7 +471,7 @@ def read_by_schema(reader):
         labels = CHECKBOX_LABELS[n]
         options[n] = labels
         defaults[n] = [labels[i] for i, fn in enumerate(flds) if _cb_on(fv(fn))]
-    special[6] = [i for i, fn in enumerate(SIX_A_FIELDS) if _cb_on(fv(fn))]  # selected indices
+    special[6] = [i for i, fn in enumerate(SIX_A_FIELDS) if _cb_on(fv(fn))]
     special[35] = sum(1 for fn in THIRTYFIVE_A_FIELDS if _is_35a_yes(fv(fn)))
     return options, defaults, special
 
@@ -525,6 +528,29 @@ def score_item(num, val):
         return (5.0 if n >= 9 else (2.5 if n >= 1 else 0.0), MAX_PER_ITEM)
     return (_score_checkbox(num, val or []), MAX_PER_ITEM)
 
+def score_values(values, special):
+    """Score every canonical item from a {num: value} dict + special (6A/35A) data."""
+    per = {}
+    for num in CANONICAL:
+        if num == 6:
+            val = special.get(6, [])
+        elif num == 35:
+            val = special.get(35, 0)
+        else:
+            val = values.get(num)
+        per[num] = score_item(num, val)
+    return per
+
+def aggregate_scores(per):
+    """Roll per-item scores up into domain rows + overall totals."""
+    domains, te, tp = [], 0.0, 0.0
+    for dnum, items in DOMAIN_ITEMS.items():
+        de = sum((per.get(n, (None, 0))[0] or 0.0) for n in items)
+        dp = DOMAIN_TOTALS[dnum]
+        domains.append((dnum, DOMAIN_TITLES[dnum], de, dp))
+        te += de; tp += dp
+    return domains, te, tp
+
 def score_color(earned, possible):
     if earned is None or not possible:
         return "#9e9e9e"
@@ -570,7 +596,267 @@ def dump_fields(reader):
                      "value": str(f.get("/V")), "states": str(f.get("/_States_"))})
     return rows
 
+# =====================================================================
+# ---------- Time-series helpers (Trends tab) ----------
+# =====================================================================
+TREND_STABLE_PP = 2.0     # |slope| below this (pp/year) is reported as "stable"
+TARGET_PCT = 80.0         # "green" threshold used for projections
+SERIES_COLORS = {1: "#0072B2", 2: "#E69F00", 3: "#009E73", 4: "#CC79A7",
+                 5: "#56B4E9", "overall": "#000000"}   # Okabe-Ito (color-blind safe)
+
+_DATE_PATTERNS = [
+    (re.compile(r"(20\d{2})[-_.](0[1-9]|1[0-2])[-_.](0[1-9]|[12]\d|3[01])"), True),
+    (re.compile(r"(?<!\d)(20\d{2})(0[1-9]|1[0-2])(0[1-9]|[12]\d|3[01])(?!\d)"), True),
+    (re.compile(r"(20\d{2})[-_.](0[1-9]|1[0-2])(?![-_.]?\d)"), False),
+]
+
+def date_from_filename(name):
+    for pat, has_day in _DATE_PATTERNS:
+        m = pat.search(name)
+        if m:
+            try:
+                return date(int(m.group(1)), int(m.group(2)),
+                            int(m.group(3)) if has_day else 1)
+            except ValueError:
+                continue
+    return None
+
+def date_from_pdf_metadata(reader):
+    """Use the PDF's /ModDate (when the filled form was last saved)."""
+    try:
+        meta = reader.metadata or {}
+        raw = str(meta.get("/ModDate") or "")
+        m = re.search(r"(\d{4})(\d{2})(\d{2})", raw)
+        if m:
+            return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except Exception:
+        pass
+    return None
+
+def parse_scores_csv(path):
+    """Read a gaset_scores.csv exported from the Scores tab (item-level section)."""
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.reader(fh))
+    if not rows or [c.strip().lower() for c in rows[0][:3]] != ["item", "earned", "possible"]:
+        raise ValueError("Not a G-ASET scores export (expected header 'Item, Earned, Possible').")
+    per = {}
+    for row in rows[1:]:
+        if not row or not row[0].strip():
+            break
+        try:
+            num = int(row[0])
+        except ValueError:
+            break
+        if num not in CANONICAL:
+            continue
+        e = float(row[1]) if len(row) > 1 and row[1].strip() else None
+        p = float(row[2]) if len(row) > 2 and row[2].strip() else MAX_PER_ITEM
+        per[num] = (e, p)
+    for num in CANONICAL:
+        per.setdefault(num, (None, MAX_PER_ITEM))
+    return per
+
+def slope_per_year(dates, ys):
+    """Ordinary least-squares slope in percentage points per year."""
+    if len(dates) < 2:
+        return None
+    t0 = min(dates)
+    xs = [(d - t0).days / 365.25 for d in dates]
+    mx, my = sum(xs) / len(xs), sum(ys) / len(ys)
+    sxx = sum((x - mx) ** 2 for x in xs)
+    if sxx == 0:
+        return None
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / sxx
+
+def trend_direction(slope):
+    if slope is None:
+        return "—"
+    if slope > TREND_STABLE_PP:
+        return "▲ Improving"
+    if slope < -TREND_STABLE_PP:
+        return "▼ Declining"
+    return "► Stable"
+
+def project_target_date(last_date, last_pct, slope, target=TARGET_PCT):
+    if last_pct > target:
+        return "Reached"
+    if slope is None:
+        return "—"
+    if slope <= 0:
+        return "Not on track"
+    years = (target - last_pct) / slope
+    if years > 10:
+        return "> 10 years"
+    return (last_date + timedelta(days=round(years * 365.25))).isoformat()
+
+def trend_summary(pts):
+    dates = [p["date"] for p in pts]
+    rows = []
+    for k in list(DOMAIN_ITEMS) + ["overall"]:
+        ys = [p["overall"] if k == "overall" else p["dpct"][k] for p in pts]
+        slope = slope_per_year(dates, ys)
+        rows.append({
+            "key": k,
+            "name": "OVERALL" if k == "overall" else DOMAIN_TITLES[k],
+            "baseline": ys[0], "latest": ys[-1],
+            "d_base": ys[-1] - ys[0],
+            "d_prev": (ys[-1] - ys[-2]) if len(ys) > 1 else None,
+            "slope": slope, "direction": trend_direction(slope),
+            "projection": project_target_date(dates[-1], ys[-1], slope),
+        })
+    return rows
+
+def item_changes(prev, last):
+    up, down = [], []
+    for n in sorted(CANONICAL):
+        a = prev["per"].get(n, (None, 0))[0] or 0.0
+        b = last["per"].get(n, (None, 0))[0] or 0.0
+        if b > a:
+            up.append((n, a, b))
+        elif b < a:
+            down.append((n, a, b))
+    return up, down
+
+def band_color(pct):
+    """≤50% red · 51–80% yellow · >80% green."""
+    if pct > 80:
+        return "#2e7d32"
+    if pct > 50:
+        return "#f9a825"
+    return "#c62828"
+
+def band_text_color(pct):
+    return "#212121" if 50 < pct <= 80 else "#ffffff"
+
+def svg_trend_chart(pts, show_domains=True, width=900, height=420):
+    """Dependency-free SVG line chart of domain/overall % over time."""
+    esc = _html.escape
+    L, R, T, B = 55, 175, 20, 80
+    pw, ph = width - L - R, height - T - B
+    dates = [p["date"] for p in pts]
+    d0, d1 = min(dates), max(dates)
+    span = (d1 - d0).days
+
+    def X(d):
+        return L + pw / 2 if span == 0 else L + (d - d0).days / span * pw
+
+    def Y(v):
+        return T + ph * (1 - max(0.0, min(100.0, v)) / 100)
+
+    s = [f'<svg viewBox="0 0 {width} {height}" width="100%" xmlns="http://www.w3.org/2000/svg" '
+         f'style="max-width:{width}px;font-family:system-ui,-apple-system,Segoe UI,sans-serif;'
+         f'font-size:12px;" role="img" aria-label="G-ASET score trends over time">']
+
+    # Traffic-light bands
+    for lo, hi, col in ((0, 50, "#c62828"), (50, 80, "#f9a825"), (80, 100, "#2e7d32")):
+        s.append(f'<rect x="{L}" y="{Y(hi):.1f}" width="{pw}" height="{Y(lo) - Y(hi):.1f}" '
+                 f'fill="{col}" fill-opacity="0.08"/>')
+    # Gridlines + y labels
+    for v in range(0, 101, 20):
+        y = Y(v)
+        s.append(f'<line x1="{L}" y1="{y:.1f}" x2="{L + pw}" y2="{y:.1f}" stroke="#e0e0e0"/>')
+        s.append(f'<text x="{L - 8}" y="{y + 4:.1f}" text-anchor="end" fill="#555">{v}%</text>')
+    for v in (50, 80):
+        s.append(f'<line x1="{L}" y1="{Y(v):.1f}" x2="{L + pw}" y2="{Y(v):.1f}" '
+                 f'stroke="#888" stroke-dasharray="4 3"/>')
+    # Axes
+    s.append(f'<line x1="{L}" y1="{T}" x2="{L}" y2="{T + ph}" stroke="#555"/>')
+    s.append(f'<line x1="{L}" y1="{T + ph}" x2="{L + pw}" y2="{T + ph}" stroke="#555"/>')
+    s.append(f'<text x="14" y="{T + ph / 2:.1f}" text-anchor="middle" fill="#333" '
+             f'transform="rotate(-90 14 {T + ph / 2:.1f})">Score (%)</text>')
+
+    # X ticks (one per distinct assessment date)
+    uniq = sorted(set(dates))
+    rotate = len(uniq) > 5
+    for d in uniq:
+        x = X(d)
+        s.append(f'<line x1="{x:.1f}" y1="{T + ph}" x2="{x:.1f}" y2="{T + ph + 5}" stroke="#555"/>')
+        if rotate:
+            ty = T + ph + 18
+            s.append(f'<text x="{x:.1f}" y="{ty}" text-anchor="end" fill="#333" '
+                     f'transform="rotate(-35 {x:.1f} {ty})">{d.isoformat()}</text>')
+        else:
+            s.append(f'<text x="{x:.1f}" y="{T + ph + 20}" text-anchor="middle" fill="#333">'
+                     f'{d.isoformat()}</text>')
+    s.append(f'<text x="{L + pw / 2:.1f}" y="{height - 8}" text-anchor="middle" fill="#333">'
+             f'Assessment date</text>')
+
+    # Series
+    keys = (list(DOMAIN_ITEMS) if show_domains else []) + ["overall"]
+    for k in keys:
+        is_o = k == "overall"
+        col = SERIES_COLORS[k]
+        name = "Overall" if is_o else DOMAIN_SHORT[k]
+        xy = [(X(p["date"]), Y(p["overall"] if is_o else p["dpct"][k]),
+               p["overall"] if is_o else p["dpct"][k], p) for p in pts]
+        if len(xy) > 1:
+            path = " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in xy)
+            width_attr = "3.5" if is_o else "2"
+            opacity = "1" if is_o else "0.85"
+            s.append(f'<polyline points="{path}" fill="none" stroke="{col}" '
+                     f'stroke-width="{width_attr}" stroke-opacity="{opacity}"/>')
+        for x, y, v, p in xy:
+            tip = esc(f"{name}\n{p['date'].isoformat()} — {p['label']}\n{v:.1f}%")
+            s.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{5 if is_o else 4}" fill="{col}" '
+                     f'stroke="white" stroke-width="1.5"><title>{tip}</title></circle>')
+
+    # Legend
+    lx, ly = L + pw + 20, T + 10
+    for i, k in enumerate(keys):
+        name = "Overall" if k == "overall" else DOMAIN_SHORT[k]
+        y = ly + i * 22
+        s.append(f'<line x1="{lx}" y1="{y}" x2="{lx + 22}" y2="{y}" stroke="{SERIES_COLORS[k]}" '
+                 f'stroke-width="{3.5 if k == "overall" else 2}"/>')
+        s.append(f'<circle cx="{lx + 11}" cy="{y}" r="4" fill="{SERIES_COLORS[k]}"/>')
+        s.append(f'<text x="{lx + 30}" y="{y + 4}" fill="#222">{esc(name)}</text>')
+    s.append("</svg>")
+    return "".join(s)
+
+def _item_label(n, stems, max_len=110):
+    txt = stems.get(n) or ITEM_FALLBACK.get(n, f"Item {n}")
+    return txt if len(txt) <= max_len else txt[:max_len - 1] + "…"
+
+def _delta_span(v):
+    if v is None:
+        return "—"
+    col = "#2e7d32" if v > 0.05 else ("#c62828" if v < -0.05 else "#555")
+    return core_ui.span(f"{v:+.1f} pp", style=f"color:{col};font-weight:600;")
+
+def _pct_cell(pct, title=""):
+    return core_ui.tags.td(
+        f"{pct:.0f}%", title=title,
+        style=(f"background:{band_color(pct)};color:{band_text_color(pct)};text-align:center;"
+               f"font-weight:600;-webkit-print-color-adjust:exact;print-color-adjust:exact;"))
+
+# ---------- Action plan template ----------
+try:
+    APP_DIR = Path(__file__).resolve().parent
+except NameError:
+    APP_DIR = Path.cwd()
+
+TEMPLATE_PATH = APP_DIR / "ga_action_plan.md"
+
+_FALLBACK_TEMPLATE = """@@meta
+tiers: foundational 0-40 | developing 40-70 | advanced 70-100
+domain_priority: 1 2 4 5 3
+@@endmeta
+
+@@rec id=FALLBACK domain=0 when=short priority=high
+### Template file not found
+- `ga_action_plan.md` was not bundled with the app. Add it to the app folder.
+"""
+
+def load_action_template():
+    try:
+        return TEMPLATE_PATH.read_text(encoding="utf-8")
+    except Exception:
+        return _FALLBACK_TEMPLATE
+
+ACTION_PLAN_TEMPLATE = load_action_template()
+
+# =====================================================================
 # ---------- Reactive state ----------
+# =====================================================================
 parsed_domains = reactive.value([])
 pdf_meta = reactive.value(None)
 current_lang = reactive.value("en")
@@ -579,6 +865,10 @@ pdf_special = reactive.value({})
 field_dump = reactive.value([])
 form_locked = reactive.value(True)
 reset_counter = reactive.value(0)
+item_stems = reactive.value({})          # {item_num: localized stem} from the sidebar PDF
+
+ts_records = reactive.value([])          # assessments uploaded on the Trends tab
+_ts_uid = {"n": 0}                       # per-session id counter for date inputs
 
 def _process_pdf(file_info, lang_choice):
     try:
@@ -605,6 +895,7 @@ def _process_pdf(file_info, lang_choice):
         pdf_special.set(special)
 
         stems = parse_stems_all(text, cfg)
+        item_stems.set(stems)
         radio_choices = {
             "yes": next((c for c in ["Sí", "Si", "Yes", "Oui", "Sim"]
                          if re.fullmatch(cfg["yes"], c, re.IGNORECASE)), "Yes"),
@@ -636,6 +927,34 @@ def _process_pdf(file_info, lang_choice):
         pdf_meta.set({"error": f"{e}\n{traceback.format_exc()}"})
         parsed_domains.set([]); geo_defaults.set({}); pdf_special.set({})
 
+def _load_trend_file(fi):
+    """Score one uploaded file (PDF or scores CSV) for the Trends tab."""
+    _ts_uid["n"] += 1
+    rec = {"uid": _ts_uid["n"], "name": fi["name"], "size": fi.get("size", 0),
+           "ok": False, "error": "", "date": None, "date_source": "", "per": {}, "overall": 0.0}
+    try:
+        reader = None
+        if fi["name"].lower().endswith(".csv"):
+            per = parse_scores_csv(fi["datapath"])
+        else:
+            reader = PdfReader(fi["datapath"])
+            if not schema_applies(reader):
+                rec["error"] = "Not a recognized G-ASET fillable form"
+                return rec
+            _opts, defaults, special = read_by_schema(reader)
+            per = score_values(defaults, special)
+
+        d, src = date_from_filename(fi["name"]), "filename"
+        if d is None and reader is not None:
+            d, src = date_from_pdf_metadata(reader), "PDF modified date — please verify"
+        _doms, te, tp = aggregate_scores(per)
+        rec.update({"ok": True, "per": per, "date": d, "date_source": src if d else "",
+                    "overall": te / tp * 100 if tp else 0.0})
+    except Exception as e:
+        rec["error"] = f"Could not read file: {e}"
+    return rec
+
+# ---------- Event handlers ----------
 @reactive.effect
 @reactive.event(input.pdf_file)
 def _on_upload():
@@ -684,37 +1003,83 @@ async def _push_lock_state():
     if session is not None:
         await session.send_custom_message("set_form_lock", {"locked": locked})
 
-# ---------- Scoring calc ----------
+@reactive.effect
+@reactive.event(input.ts_files)
+def _on_ts_upload():
+    files = input.ts_files() or []
+    existing = list(ts_records.get())
+    seen = {(r["name"], r["size"]) for r in existing}
+    for fi in files:
+        if (fi["name"], fi.get("size", 0)) in seen:
+            continue
+        existing.append(_load_trend_file(fi))
+    ts_records.set(existing)
+
+@reactive.effect
+@reactive.event(input.ts_clear)
+def _on_ts_clear():
+    ts_records.set([])
+
+# ---------- Calcs ----------
 @reactive.calc
 def all_scores():
     special = pdf_special.get()
     defs = geo_defaults.get()
-    per = {}
+    values = {}
     for num in CANONICAL:
-        if num == 6:
-            val = special.get(6, [])
-        elif num == 35:
-            val = special.get(35, 0)
-        else:
-            try:
-                val = input[f"q_{num}"]()
-            except Exception:
-                val = None
-            if val is None:
-                val = defs.get(num)
-        per[num] = score_item(num, val)
-    domains, te, tp = [], 0.0, 0.0
-    for dnum, items in DOMAIN_ITEMS.items():
-        de = sum(per[n][0] for n in items if per.get(n) and per[n][0] is not None)
-        dp = DOMAIN_TOTALS[dnum]
-        domains.append((dnum, DOMAIN_TITLES[dnum], de, dp))
-        te += de; tp += dp
+        if num in (6, 35):
+            continue
+        try:
+            val = input[f"q_{num}"]()
+        except Exception:
+            val = None
+        values[num] = defs.get(num) if val is None else val
+    per = score_values(values, special)
+    domains, te, tp = aggregate_scores(per)
     return per, domains, te, tp
+
+@reactive.calc
+def action_plan_md():
+    per, domains, te, tp = all_scores()
+    ctx = {"setting": input.ctx_setting(), "micro": input.ctx_micro(),
+           "ehr": input.ctx_ehr(), "team": input.ctx_team(),
+           "funding": input.ctx_funding(), "national": input.ctx_national()}
+    return build_action_plan(per, domains, ctx, ACTION_PLAN_TEMPLATE,
+                             facility=(input.ctx_facility() or "").strip())
+
+@reactive.calc
+def ts_dataset():
+    """Dated, scored, chronologically sorted assessments for trend analysis."""
+    pts = []
+    for r in ts_records.get():
+        if not r["ok"]:
+            continue
+        try:
+            d = input[f"ts_date_{r['uid']}"]()
+        except Exception:
+            d = None
+        d = d or r["date"]
+        if d is None:
+            continue
+        pts.append({"label": r["name"], "date": d, "per": r["per"]})
+
+    if input.ts_include_current() and parsed_domains.get():
+        per, _d, _e, _t = all_scores()
+        name = (pdf_meta.get() or {}).get("name", "Current assessment")
+        pts.append({"label": f"{name} (live)",
+                    "date": input.ts_current_date() or date.today(), "per": dict(per)})
+
+    for p in pts:
+        p["domains"], p["te"], p["tp"] = aggregate_scores(p["per"])
+        p["dpct"] = {dn: (de / dp * 100 if dp else 0) for dn, _n, de, dp in p["domains"]}
+        p["overall"] = p["te"] / p["tp"] * 100 if p["tp"] else 0
+    pts.sort(key=lambda p: (p["date"], p["label"]))
+    return pts
 
 @reactive.effect
 async def _push_badges():
-    _ = parsed_domains.get()   # re-run when the form is (re)rendered
-    _ = reset_counter.get()    # re-run after a reset
+    _ = parsed_domains.get()
+    _ = reset_counter.get()
     per, _d, _e, _t = all_scores()
     session = get_current_session()
     if session is None:
@@ -727,7 +1092,10 @@ async def _push_badges():
         items[f"badge_q_{num}"] = {"html": "—" if e is None else f"{e:g} / {p:g}",
                                    "bg": score_color(e, p)}
     await session.send_custom_message("update_badges", {"items": items})
-# ---------- UI: sidebar ----------
+
+# =====================================================================
+# ---------- UI: sidebar (visible on every tab) ----------
+# =====================================================================
 with ui.sidebar():
     @render.ui
     def sidebar_title():
@@ -752,38 +1120,418 @@ with ui.sidebar():
                       else (cfg["ui_unlocked_msg"], "#2e7d32"))
         return core_ui.p(msg, style=f"color:{color}; font-weight:600; margin-top:8px;")
 
-# ---------- UI: status ----------
-with ui.card():
-    @render.ui
-    def status_header():
-        return core_ui.card_header(LANGS[current_lang.get()]["ui_status"])
+# =====================================================================
+# ---------- UI: main tabs ----------
+# =====================================================================
+with ui.navset_card_tab(id="main_tabs"):
 
-    @render.ui
-    def pdf_status():
-        meta = pdf_meta.get()
-        cfg = LANGS[current_lang.get()]
-        if meta is None:
-            return core_ui.p(cfg["ui_no_pdf"], class_="text-muted")
-        if "error" in meta:
-            return core_ui.tags.pre(meta["error"], style="color:red; white-space:pre-wrap;")
-        if not meta.get("recognized"):
-            return core_ui.TagList(
-                core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
-                          core_ui.strong("Pages: "), str(meta["pages"])),
-                core_ui.p("⚠️ This PDF was not recognized as the standard G-ASET fillable form "
-                          f"(found {meta.get('n_fields', 0)} fields, but not the expected names). "
-                          "Scoring is unavailable. See the field map below.",
-                          style="color:#c62828; font-weight:600;"))
-        return core_ui.TagList(
-            core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
-                      core_ui.strong("Pages: "), str(meta["pages"]), " | ",
-                      core_ui.strong("Size: "), f"{meta['size']:,} bytes"),
-            core_ui.p(cfg["ui_parsed"].format(nq=meta.get("n_questions", 0), lang=meta["lang"])),
-            core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."))
+    # ---------------- Tab 1: Assessment ----------------
+    with ui.nav_panel("📝 Assessment"):
+        with ui.card():
+            @render.ui
+            def status_header():
+                return core_ui.card_header(LANGS[current_lang.get()]["ui_status"])
 
-# ---------- Dynamic form ----------
-core_ui.div(id="dynamic_form_container")
+            @render.ui
+            def pdf_status():
+                meta = pdf_meta.get()
+                cfg = LANGS[current_lang.get()]
+                if meta is None:
+                    return core_ui.p(cfg["ui_no_pdf"], class_="text-muted")
+                if "error" in meta:
+                    return core_ui.tags.pre(meta["error"], style="color:red; white-space:pre-wrap;")
+                if not meta.get("recognized"):
+                    return core_ui.TagList(
+                        core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
+                                  core_ui.strong("Pages: "), str(meta["pages"])),
+                        core_ui.p("⚠️ This PDF was not recognized as the standard G-ASET fillable form "
+                                  f"(found {meta.get('n_fields', 0)} fields, but not the expected names). "
+                                  "Scoring is unavailable. See the Diagnostics tab.",
+                                  style="color:#c62828; font-weight:600;"))
+                return core_ui.TagList(
+                    core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
+                              core_ui.strong("Pages: "), str(meta["pages"]), " | ",
+                              core_ui.strong("Size: "), f"{meta['size']:,} bytes"),
+                    core_ui.p(cfg["ui_parsed"].format(nq=meta.get("n_questions", 0), lang=meta["lang"])),
+                    core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."))
 
+        core_ui.div(id="dynamic_form_container")
+
+    # ---------------- Tab 2: Scores ----------------
+    with ui.nav_panel("📊 Scores"):
+        with ui.card():
+            @render.ui
+            def scores_header():
+                return core_ui.card_header(LANGS[current_lang.get()]["ui_scores"])
+
+            @render.ui
+            def score_table():
+                per, domains, te, tp = all_scores()
+                cfg = LANGS[current_lang.get()]
+                if not parsed_domains.get():
+                    return core_ui.p(cfg["ui_scores_later"], class_="text-muted")
+                rows = []
+                for _, name, de, dp in domains:
+                    pct = (de / dp * 100) if dp else 0
+                    rows.append(core_ui.tags.tr(
+                        core_ui.tags.td(name),
+                        core_ui.tags.td(f"{de:g} / {dp}", style="text-align:center;"),
+                        core_ui.tags.td(f"{pct:.1f}%", style="text-align:center;")))
+                overall = (te / tp * 100) if tp else 0
+                rows.append(core_ui.tags.tr(
+                    core_ui.tags.td(core_ui.strong(cfg["ui_overall"])),
+                    core_ui.tags.td(core_ui.strong(f"{te:g} / {tp:g}"), style="text-align:center;"),
+                    core_ui.tags.td(core_ui.strong(f"{overall:.1f}%"), style="text-align:center;"),
+                    style="background:#e8f4f8;"))
+                return core_ui.tags.table(
+                    core_ui.tags.thead(core_ui.tags.tr(
+                        core_ui.tags.th(cfg["ui_domain"]),
+                        core_ui.tags.th(cfg["ui_score"], style="text-align:center;"),
+                        core_ui.tags.th(cfg["ui_pct"], style="text-align:center;"))),
+                    core_ui.tags.tbody(*rows),
+                    class_="table table-striped table-bordered")
+
+            @render.download(label="⬇️ Download scores (CSV)", filename="gaset_scores.csv")
+            def download_scores():
+                per, domains, te, tp = all_scores()
+                buf = io.StringIO(); w = csv.writer(buf)
+                w.writerow(["Item", "Earned", "Possible"])
+                for num in sorted(CANONICAL):
+                    e, p = per.get(num, (None, None))
+                    w.writerow([num, "" if e is None else f"{e:g}", f"{p:g}"])
+                w.writerow([])
+                w.writerow(["Domain", "Earned", "Possible", "Percentage"])
+                for _, name, de, dp in domains:
+                    w.writerow([name, f"{de:g}", dp, f"{(de/dp*100 if dp else 0):.1f}%"])
+                w.writerow(["OVERALL", f"{te:g}", f"{tp:g}", f"{(te/tp*100 if tp else 0):.1f}%"])
+                yield buf.getvalue()
+
+        with ui.card():
+            ui.card_header("🧩 Table items scored from the PDF (6A, 35A)")
+
+            @render.ui
+            def special_view():
+                special = pdf_special.get()
+                per, _, _, _ = all_scores()
+                if not parsed_domains.get():
+                    return core_ui.p("Upload a recognized G-ASET PDF to see these.", class_="text-muted")
+                e6, _ = per.get(6, (None, None))
+                e35, _ = per.get(35, (None, None))
+                roles = [SIX_A_LABELS[i] for i in special.get(6, [])]
+                n35 = special.get(35, 0)
+                return core_ui.TagList(
+                    core_ui.p(core_ui.strong("Item 6A "), f"→ {e6:g} / 5" if e6 is not None else "—",
+                              core_ui.tags.br(),
+                              core_ui.tags.small(f"Selected roles: {', '.join(roles) if roles else 'none'}")),
+                    core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
+                              core_ui.tags.br(),
+                              core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
+
+    # ---------------- Tab 3: Action Plan ----------------
+    with ui.nav_panel("🧭 Action Plan"):
+        with ui.layout_columns(col_widths=[4, 8]):
+            with ui.card():
+                ui.card_header("⚙️ Facility context")
+                ui.input_text("ctx_facility", "Facility name (optional)", "")
+                ui.input_select("ctx_setting", "Resource setting",
+                                {"resource_limited": "Resource-limited", "well_resourced": "Well-resourced"})
+                ui.input_select("ctx_micro", "Clinical microbiology access",
+                                {"none": "None", "offsite": "Off-site / referral", "onsite": "On-site"})
+                ui.input_select("ctx_ehr", "Electronic health record",
+                                {"none": "None", "partial": "Partial", "full": "Full"})
+                ui.input_select("ctx_team", "Formal AMS team",
+                                {"none": "None", "informal": "Informal", "formal": "Formal"})
+                ui.input_select("ctx_funding", "Dedicated AMS time/funding",
+                                {"none": "None", "some": "Some", "dedicated": "Dedicated"})
+                ui.input_select("ctx_national", "National AMS policy to align to",
+                                {"no": "No", "yes": "Yes"})
+
+            with ui.card():
+                ui.card_header("🧭 Action Plan")
+
+                @render.download(label="⬇️ Download action plan (.md)",
+                                 filename="gaset_action_plan.md")
+                def download_action_plan():
+                    yield action_plan_md()
+
+                @render.ui
+                def action_plan_view():
+                    if not parsed_domains.get():
+                        return core_ui.p("Upload a recognized G-ASET PDF to generate a plan.",
+                                         class_="text-muted")
+                    return core_ui.markdown(action_plan_md())
+
+    # ---------------- Tab 4: Trends (time series) ----------------
+    with ui.nav_panel("📈 Trends"):
+        with ui.layout_columns(col_widths=[5, 7]):
+            with ui.card():
+                ui.card_header("📥 Add assessments")
+                ui.input_file("ts_files", "G-ASET PDFs and/or score CSVs",
+                              accept=[".pdf", ".csv"], multiple=True)
+                core_ui.markdown(
+                    "Upload multiple completed G-ASET forms (or `gaset_scores.csv` exports from the "
+                    "Scores tab). Files accumulate across uploads.\n\n"
+                    "**Dates** are detected from the filename (e.g. `Facility_2024-03-15.pdf`, "
+                    "`20240315`, `2024-03`), then from the PDF's modified date. "
+                    "Check and correct each date in the table →")
+                ui.input_switch("ts_include_current",
+                                "Include the assessment loaded in the sidebar (with live edits)", False)
+                ui.input_date("ts_current_date", "Date of that assessment", value=date.today())
+                ui.input_switch("ts_show_domains", "Show individual domains on chart", True)
+                ui.input_action_button("ts_clear", "🗑 Clear all uploaded assessments",
+                                       class_="btn-outline-danger btn-sm")
+
+            with ui.card():
+                ui.card_header("🗂 Assessments & dates")
+
+                @render.ui
+                def ts_file_table():
+                    recs = ts_records.get()
+                    if not recs:
+                        return core_ui.p("No assessments added yet.", class_="text-muted")
+                    rows = []
+                    for r in recs:
+                        if r["ok"]:
+                            iid = f"ts_date_{r['uid']}"
+                            with reactive.isolate():          # keep user edits across re-renders
+                                try:
+                                    cur = input[iid]()
+                                except Exception:
+                                    cur = None
+                            val = cur or r["date"]
+                            date_cell = core_ui.input_date(
+                                iid, None, value=val.isoformat() if val else None, width="150px")
+                            status = "✅"
+                            score = f"{r['overall']:.0f}%"
+                            src = r["date_source"] or "⚠️ date not detected — please set"
+                        else:
+                            date_cell, status, score, src = "—", "❌", "—", r["error"]
+                        rows.append(core_ui.tags.tr(
+                            core_ui.tags.td(r["name"], style="word-break:break-all;"),
+                            core_ui.tags.td(status, style="text-align:center;"),
+                            core_ui.tags.td(score, style="text-align:center;"),
+                            core_ui.tags.td(date_cell),
+                            core_ui.tags.td(core_ui.tags.small(src))))
+                    return core_ui.tags.table(
+                        core_ui.tags.thead(core_ui.tags.tr(
+                            core_ui.tags.th("File"), core_ui.tags.th("OK"),
+                            core_ui.tags.th("Overall"), core_ui.tags.th("Assessment date"),
+                            core_ui.tags.th("Date source / note"))),
+                        core_ui.tags.tbody(*rows),
+                        class_="table table-sm align-middle", style="font-size:0.9em;")
+
+        with ui.card():
+            ui.card_header("🔎 Key findings")
+
+            @render.ui
+            def ts_insights():
+                pts = ts_dataset()
+                if not pts:
+                    return core_ui.p("Add two or more dated G-ASET assessments to see trends.",
+                                     class_="text-muted")
+                if len(pts) < 2:
+                    return core_ui.p("Only one dated assessment so far — add at least one more "
+                                     "to compute change and trend.", class_="text-muted")
+                first, last = pts[0], pts[-1]
+                months = (last["date"] - first["date"]).days / 30.44
+                summ = {r["key"]: r for r in trend_summary(pts)}
+                dom_rows = [summ[d] for d in DOMAIN_ITEMS]
+                best = max(dom_rows, key=lambda r: r["d_base"])
+                worst = min(dom_rows, key=lambda r: r["d_base"])
+                below = [DOMAIN_SHORT[r["key"]] for r in dom_rows if r["latest"] <= 50]
+                up, down = item_changes(pts[-2], last)
+                o = summ["overall"]
+
+                lines = [
+                    f"- **Overall:** {o['baseline']:.1f}% → {o['latest']:.1f}% "
+                    f"(**{o['d_base']:+.1f} pp**) across **{len(pts)}** assessments "
+                    f"spanning **{months:.1f} months**.",
+                    f"- **Trend:** {o['direction']}"
+                    + (f" ({o['slope']:+.1f} pp/year)" if o["slope"] is not None else "")
+                    + f" · projected to reach {TARGET_PCT:.0f}%: **{o['projection']}**.",
+                    f"- **Largest gain:** {DOMAIN_SHORT[best['key']]} ({best['d_base']:+.1f} pp).",
+                ]
+                if worst["d_base"] < 0:
+                    lines.append(f"- **Largest decline:** {DOMAIN_SHORT[worst['key']]} "
+                                 f"({worst['d_base']:+.1f} pp).")
+                lines.append("- **Domains at or below 50% in latest assessment:** "
+                             + (", ".join(below) if below else "none 🎉"))
+                lines.append(f"- **Since previous assessment:** {len(up)} items improved, "
+                             f"{len(down)} regressed.")
+                lines.append("\n*pp = percentage points. Slopes are descriptive (least-squares across "
+                             "all assessments) and are not statistical forecasts; interpret with "
+                             "caution when there are few assessments.*")
+                return core_ui.markdown("\n".join(lines))
+
+        with ui.card():
+            ui.card_header("📈 Scores over time")
+
+            @render.ui
+            def ts_chart():
+                pts = ts_dataset()
+                if not pts:
+                    return core_ui.p("Chart will appear once assessments are added.",
+                                     class_="text-muted")
+                return core_ui.HTML(svg_trend_chart(pts, show_domains=input.ts_show_domains()))
+
+        with ui.card():
+            ui.card_header("🟥🟨🟩 Domain score matrix")
+
+            @render.ui
+            def ts_heatmap():
+                pts = ts_dataset()
+                if not pts:
+                    return core_ui.p("No dated assessments yet.", class_="text-muted")
+                head = [core_ui.tags.th("Date"), core_ui.tags.th("Assessment")]
+                head += [core_ui.tags.th(DOMAIN_SHORT[d], style="text-align:center;")
+                         for d in DOMAIN_ITEMS]
+                head.append(core_ui.tags.th("Overall", style="text-align:center;"))
+                rows = []
+                for p in pts:
+                    cells = [core_ui.tags.td(p["date"].isoformat()),
+                             core_ui.tags.td(p["label"], style="word-break:break-all;")]
+                    for dn, _n, de, dp in p["domains"]:
+                        cells.append(_pct_cell(p["dpct"][dn], title=f"{de:g} / {dp}"))
+                    cells.append(_pct_cell(p["overall"], title=f"{p['te']:g} / {p['tp']:g}"))
+                    rows.append(core_ui.tags.tr(*cells))
+                return core_ui.TagList(
+                    core_ui.tags.table(core_ui.tags.thead(core_ui.tags.tr(*head)),
+                                       core_ui.tags.tbody(*rows),
+                                       class_="table table-bordered table-sm"),
+                    core_ui.tags.small("≤ 50% red · 51–80% yellow · > 80% green. "
+                                       "Hover a cell for earned / possible points.",
+                                       class_="text-muted"))
+
+        with ui.card():
+            ui.card_header("📐 Trend summary by domain")
+
+            @render.ui
+            def ts_trend_table():
+                pts = ts_dataset()
+                if len(pts) < 2:
+                    return core_ui.p("Requires at least two dated assessments.", class_="text-muted")
+                rows = []
+                for r in trend_summary(pts):
+                    is_o = r["key"] == "overall"
+                    rows.append(core_ui.tags.tr(
+                        core_ui.tags.td(core_ui.strong(r["name"]) if is_o else r["name"]),
+                        _pct_cell(r["baseline"]), _pct_cell(r["latest"]),
+                        core_ui.tags.td(_delta_span(r["d_base"]), style="text-align:center;"),
+                        core_ui.tags.td(_delta_span(r["d_prev"]), style="text-align:center;"),
+                        core_ui.tags.td("—" if r["slope"] is None else f"{r['slope']:+.1f}",
+                                        style="text-align:center;"),
+                        core_ui.tags.td(r["direction"], style="text-align:center;"),
+                        core_ui.tags.td(r["projection"], style="text-align:center;"),
+                        style="background:#e8f4f8;" if is_o else None))
+                return core_ui.tags.table(
+                    core_ui.tags.thead(core_ui.tags.tr(
+                        core_ui.tags.th("Domain"),
+                        core_ui.tags.th("Baseline", style="text-align:center;"),
+                        core_ui.tags.th("Latest", style="text-align:center;"),
+                        core_ui.tags.th("Δ since baseline", style="text-align:center;"),
+                        core_ui.tags.th("Δ since previous", style="text-align:center;"),
+                        core_ui.tags.th("Slope (pp/yr)", style="text-align:center;"),
+                        core_ui.tags.th("Direction", style="text-align:center;"),
+                        core_ui.tags.th(f"Projected {TARGET_PCT:.0f}%", style="text-align:center;"))),
+                    core_ui.tags.tbody(*rows),
+                    class_="table table-bordered table-sm")
+
+        with ui.card():
+            ui.card_header("🔁 Item-level changes (previous → latest)")
+
+            @render.ui
+            def ts_item_changes():
+                pts = ts_dataset()
+                if len(pts) < 2:
+                    return core_ui.p("Requires at least two dated assessments.", class_="text-muted")
+                prev, last = pts[-2], pts[-1]
+                up, down = item_changes(prev, last)
+                stems = item_stems.get()
+
+                def _list(items, col):
+                    if not items:
+                        return core_ui.p("None.", class_="text-muted")
+                    return core_ui.tags.ul(*[core_ui.tags.li(
+                        core_ui.span(f"{a:g} → {b:g}",
+                                     style=f"display:inline-block;padding:1px 7px;border-radius:9px;"
+                                           f"background:{col};color:white;font-size:0.8em;"
+                                           f"font-weight:600;margin-right:6px;"),
+                        core_ui.strong(f"D{ITEM_DOMAIN[n]} · "), _item_label(n, stems))
+                        for n, a, b in items], style="padding-left:1.1em;")
+
+                return core_ui.TagList(
+                    core_ui.p(core_ui.tags.small(
+                        f"Comparing {prev['date'].isoformat()} ({prev['label']}) → "
+                        f"{last['date'].isoformat()} ({last['label']})", class_="text-muted")),
+                    core_ui.div(
+                        core_ui.div(core_ui.h6(f"▼ Regressed ({len(down)})", style="color:#c62828;"),
+                                    _list(down, "#c62828"), class_="col-md-6"),
+                        core_ui.div(core_ui.h6(f"▲ Improved ({len(up)})", style="color:#2e7d32;"),
+                                    _list(up, "#2e7d32"), class_="col-md-6"),
+                        class_="row"))
+
+        with ui.card():
+            ui.card_header("⬇️ Export trend data")
+
+            @render.download(label="⬇️ Domain trends (CSV, long format)",
+                             filename=lambda: f"gaset_trends_{date.today().isoformat()}.csv")
+            def download_trends():
+                pts = ts_dataset()
+                buf = io.StringIO(); w = csv.writer(buf)
+                w.writerow(["date", "assessment", "domain", "earned", "possible", "percent"])
+                for p in pts:
+                    for _dn, name, de, dp in p["domains"]:
+                        w.writerow([p["date"].isoformat(), p["label"], name,
+                                    f"{de:g}", dp, f"{(de / dp * 100 if dp else 0):.1f}"])
+                    w.writerow([p["date"].isoformat(), p["label"], "OVERALL",
+                                f"{p['te']:g}", f"{p['tp']:g}", f"{p['overall']:.1f}"])
+                yield buf.getvalue()
+
+            @render.download(label="⬇️ Item-level matrix (CSV)",
+                             filename=lambda: f"gaset_trend_items_{date.today().isoformat()}.csv")
+            def download_trend_items():
+                pts = ts_dataset()
+                buf = io.StringIO(); w = csv.writer(buf)
+                w.writerow(["item", "domain"] + [f"{p['date'].isoformat()} | {p['label']}" for p in pts])
+                for n in sorted(CANONICAL):
+                    w.writerow([n, ITEM_DOMAIN[n]] + [
+                        "" if p["per"].get(n, (None, 0))[0] is None
+                        else f"{p['per'][n][0]:g}" for p in pts])
+                yield buf.getvalue()
+
+    # ---------------- Tab 5: Diagnostics ----------------
+    with ui.nav_panel("🔧 Diagnostics"):
+        with ui.card():
+            ui.card_header("🔧 AcroForm field map (diagnostic)")
+
+            @render.download(label="⬇️ Download field map (CSV)", filename="gaset_field_dump.csv")
+            def download_field_dump():
+                rows = field_dump.get()
+                buf = io.StringIO(); w = csv.writer(buf)
+                w.writerow(["name", "type", "value", "states"])
+                for r in rows:
+                    w.writerow([r["name"], r["type"], r["value"], r["states"]])
+                yield buf.getvalue()
+
+            @render.ui
+            def field_dump_view():
+                rows = field_dump.get()
+                if not rows:
+                    return core_ui.p("Upload a PDF to list its form fields.", class_="text-muted")
+                body = [core_ui.tags.tr(core_ui.tags.td(r["name"]), core_ui.tags.td(r["type"]),
+                                        core_ui.tags.td(r["value"]), core_ui.tags.td(r["states"]))
+                        for r in rows]
+                return core_ui.tags.details(
+                    core_ui.tags.summary(f"Show {len(rows)} fields"),
+                    core_ui.tags.table(
+                        core_ui.tags.thead(core_ui.tags.tr(
+                            core_ui.tags.th("Field name"), core_ui.tags.th("Type"),
+                            core_ui.tags.th("Value"), core_ui.tags.th("States"))),
+                        core_ui.tags.tbody(*body),
+                        class_="table table-sm table-striped", style="font-size:0.8em;"))
+
+
+# ---------- Dynamic form (renders into the Assessment tab) ----------
 @reactive.effect
 def _render_dynamic_form():
     domains = parsed_domains.get()
@@ -811,172 +1559,3 @@ def _render_dynamic_form():
                     q["id"], label_html, choices=q["options"], selected=default))
         ui.insert_ui(core_ui.card(core_ui.card_header(d["name"]), *items),
                      selector="#dynamic_form_container", where="beforeEnd")
-
-# ---------- Scores summary ----------
-with ui.card():
-    @render.ui
-    def scores_header():
-        return core_ui.card_header(LANGS[current_lang.get()]["ui_scores"])
-
-    @render.ui
-    def score_table():
-        per, domains, te, tp = all_scores()
-        cfg = LANGS[current_lang.get()]
-        if not parsed_domains.get():
-            return core_ui.p(cfg["ui_scores_later"], class_="text-muted")
-        rows = []
-        for _, name, de, dp in domains:
-            pct = (de / dp * 100) if dp else 0
-            rows.append(core_ui.tags.tr(
-                core_ui.tags.td(name),
-                core_ui.tags.td(f"{de:g} / {dp}", style="text-align:center;"),
-                core_ui.tags.td(f"{pct:.1f}%", style="text-align:center;")))
-        overall = (te / tp * 100) if tp else 0
-        rows.append(core_ui.tags.tr(
-            core_ui.tags.td(core_ui.strong(cfg["ui_overall"])),
-            core_ui.tags.td(core_ui.strong(f"{te:g} / {tp:g}"), style="text-align:center;"),
-            core_ui.tags.td(core_ui.strong(f"{overall:.1f}%"), style="text-align:center;"),
-            style="background:#e8f4f8;"))
-        return core_ui.tags.table(
-            core_ui.tags.thead(core_ui.tags.tr(
-                core_ui.tags.th(cfg["ui_domain"]),
-                core_ui.tags.th(cfg["ui_score"], style="text-align:center;"),
-                core_ui.tags.th(cfg["ui_pct"], style="text-align:center;"))),
-            core_ui.tags.tbody(*rows),
-            class_="table table-striped table-bordered")
-
-    @render.download(label="⬇️ Download scores (CSV)", filename="gaset_scores.csv")
-    def download_scores():
-        per, domains, te, tp = all_scores()
-        buf = io.StringIO(); w = csv.writer(buf)
-        w.writerow(["Item", "Earned", "Possible"])
-        for num in sorted(CANONICAL):
-            e, p = per.get(num, (None, None))
-            w.writerow([num, "" if e is None else f"{e:g}", f"{p:g}"])
-        w.writerow([])
-        w.writerow(["Domain", "Earned", "Possible", "Percentage"])
-        for _, name, de, dp in domains:
-            w.writerow([name, f"{de:g}", dp, f"{(de/dp*100 if dp else 0):.1f}%"])
-        w.writerow(["OVERALL", f"{te:g}", f"{tp:g}", f"{(te/tp*100 if tp else 0):.1f}%"])
-        yield buf.getvalue()
-        
-# ---------- Table items 6A / 35A ----------
-with ui.card():
-    ui.card_header("🧩 Table items scored from the PDF (6A, 35A)")
-
-    @render.ui
-    def special_view():
-        special = pdf_special.get()
-        per, _, _, _ = all_scores()
-        if not parsed_domains.get():
-            return core_ui.p("Upload a recognized G-ASET PDF to see these.", class_="text-muted")
-        e6, _ = per.get(6, (None, None))
-        e35, _ = per.get(35, (None, None))
-        role_idx = special.get(6, [])
-        roles = [SIX_A_LABELS[i] for i in role_idx]
-        n35 = special.get(35, 0)
-        return core_ui.TagList(
-            core_ui.p(core_ui.strong("Item 6A "), f"→ {e6:g} / 5" if e6 is not None else "—",
-                      core_ui.tags.br(),
-                      core_ui.tags.small(f"Selected roles: {', '.join(roles) if roles else 'none'}")),
-            core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
-                      core_ui.tags.br(),
-                      core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
-
-# ---------- Field dump ----------
-with ui.card():
-    ui.card_header("🔧 AcroForm field map (diagnostic)")
-
-    @render.download(label="⬇️ Download field map (CSV)", filename="gaset_field_dump.csv")
-    def download_field_dump():
-        rows = field_dump.get()
-        buf = io.StringIO(); w = csv.writer(buf)
-        w.writerow(["name", "type", "value", "states"])
-        for r in rows:
-            w.writerow([r["name"], r["type"], r["value"], r["states"]])
-        yield buf.getvalue()
-
-    @render.ui
-    def field_dump_view():
-        rows = field_dump.get()
-        if not rows:
-            return core_ui.p("Upload a PDF to list its form fields.", class_="text-muted")
-        body = [core_ui.tags.tr(core_ui.tags.td(r["name"]), core_ui.tags.td(r["type"]),
-                                core_ui.tags.td(r["value"]), core_ui.tags.td(r["states"]))
-                for r in rows]
-        return core_ui.tags.details(
-            core_ui.tags.summary(f"Show {len(rows)} fields"),
-            core_ui.tags.table(
-                core_ui.tags.thead(core_ui.tags.tr(
-                    core_ui.tags.th("Field name"), core_ui.tags.th("Type"),
-                    core_ui.tags.th("Value"), core_ui.tags.th("States"))),
-                core_ui.tags.tbody(*body),
-                class_="table table-sm table-striped", style="font-size:0.8em;"))
-
-# -------- Action Plan UI ---------------
-
-
-from pathlib import Path
-
-try:
-    APP_DIR = Path(__file__).resolve().parent
-except NameError:            # __file__ can be undefined in some contexts
-    APP_DIR = Path.cwd()
-
-TEMPLATE_PATH = APP_DIR / "ga_action_plan.md"
-
-_FALLBACK_TEMPLATE = """@@meta
-tiers: foundational 0-40 | developing 40-70 | advanced 70-100
-domain_priority: 1 2 4 5 3
-@@endmeta
-
-@@rec id=FALLBACK domain=0 when=short priority=high
-### Template file not found
-- `action_plan_template.md` was not bundled with the app. Add it to the app folder.
-"""
-
-def load_action_template():
-    try:
-        return TEMPLATE_PATH.read_text(encoding="utf-8")   # utf-8 for em-dashes / AWaRe etc.
-    except Exception:
-        return _FALLBACK_TEMPLATE
-
-ACTION_PLAN_TEMPLATE = load_action_template()
-
-with ui.card():
-    ui.card_header("🧭 Action Plan Generator")
-
-    ui.input_select("ctx_setting", "Resource setting",
-                    {"resource_limited": "Resource-limited", "well_resourced": "Well-resourced"})
-    ui.input_select("ctx_micro", "Clinical microbiology access",
-                    {"none": "None", "offsite": "Off-site / referral", "onsite": "On-site"})
-    ui.input_select("ctx_ehr", "Electronic health record",
-                    {"none": "None", "partial": "Partial", "full": "Full"})
-    ui.input_select("ctx_team", "Formal AMS team",
-                    {"none": "None", "informal": "Informal", "formal": "Formal"})
-    ui.input_select("ctx_funding", "Dedicated AMS time/funding",
-                    {"none": "None", "some": "Some", "dedicated": "Dedicated"})
-    ui.input_select("ctx_national", "National AMS policy to align to",
-                    {"no": "No", "yes": "Yes"})
-
-    @reactive.calc
-    def action_plan_md():
-        per, domains, te, tp = all_scores()
-        ctx = {"setting": input.ctx_setting(), "micro": input.ctx_micro(),
-               "ehr": input.ctx_ehr(), "team": input.ctx_team(),
-               "funding": input.ctx_funding(), "national": input.ctx_national()}
-        return build_action_plan(per, domains, ctx, ACTION_PLAN_TEMPLATE)
-
-    @render.ui
-    def action_plan_view():
-        if not parsed_domains.get():
-            return core_ui.p("Upload a recognized G-ASET PDF to generate a plan.",
-                             class_="text-muted")
-        return core_ui.markdown(action_plan_md())
-
-    @render.download(filename="gaset_action_plan.md")
-    def download_action_plan():
-        yield action_plan_md()
-
-    core_ui.download_button("download_action_plan", "⬇️ Download action plan (.md)",
-                            class_="btn-sm btn-primary")
