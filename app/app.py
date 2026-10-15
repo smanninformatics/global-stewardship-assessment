@@ -58,6 +58,214 @@ Shiny.addCustomMessageHandler('set_form_lock', function(msg) {
 });
 """)
 
+# ---------- Combined-PDF export (print engine) ----------
+core_ui.tags.style("""
+#gaset-print-root { display: none; }
+
+@media print {
+    body > *:not(#gaset-print-root) { display: none !important; }
+    #gaset-print-root { display: block !important; font-size: 10.5pt; color: #000; }
+    html, body { background: #fff !important; margin: 0 !important; padding: 0 !important; }
+
+    #gaset-print-root, #gaset-print-root * {
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+        box-shadow: none !important;
+    }
+
+    /* One section per tab, each starting on a new page (except the very first) */
+    #gaset-print-root > .print-section { break-before: page; }
+    #gaset-print-root > .print-section:first-child { break-before: auto; }
+    .print-section-title {
+        font-size: 1.35em; font-weight: 700; border-bottom: 2px solid #333;
+        padding-bottom: 4px; margin: 0 0 10px 0; break-after: avoid;
+    }
+
+    /* Flatten bslib layouts so content flows naturally on paper */
+    #gaset-print-root .bslib-grid,
+    #gaset-print-root .html-fill-container,
+    #gaset-print-root .html-fill-item {
+        display: block !important; height: auto !important; flex: none !important;
+    }
+    #gaset-print-root .bslib-grid > * { width: 100% !important; margin-bottom: 8px; }
+    #gaset-print-root .card, #gaset-print-root .card-body {
+        height: auto !important; max-height: none !important; overflow: visible !important;
+        border: 1px solid #bbb !important; margin-bottom: 8px !important;
+    }
+    #gaset-print-root .card-header {
+        background: #e8eef7 !important; font-weight: 700; break-after: avoid;
+    }
+
+    /* Hide interactive-only elements */
+    #gaset-print-root .btn,
+    #gaset-print-root .shiny-download-link,
+    #gaset-print-root input[type="file"],
+    #gaset-print-root .shiny-input-container:has(input[type="file"]),
+    #gaset-print-root .bslib-full-screen-enter,
+    #gaset-print-root .nav { display: none !important; }
+
+    #gaset-print-root .shiny-input-container,
+    #gaset-print-root tr,
+    #gaset-print-root svg { break-inside: avoid; }
+    #gaset-print-root table { width: 100% !important; border-collapse: collapse; }
+    #gaset-print-root .print-select-value { font-weight: 600; }
+
+    /* Cover page */
+    .print-cover { break-after: page; padding-top: 1.5in; }
+    .print-cover h1 { font-size: 2em; margin-bottom: 0.4in; border-bottom: 3px solid #1f4e79; }
+    .print-cover-table th { text-align: left; padding: 6px 18px 6px 0; width: 30%; color: #333; }
+    .print-cover-table td { padding: 6px 0; }
+    .print-cover-note { margin-top: 0.6in; font-style: italic; color: #555; }
+}
+""")
+
+core_ui.tags.script("""
+(function () {
+    const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+    // Resolve once Shiny has stopped recalculating for ~400 ms (or after maxMs)
+    async function waitForShinyIdle(maxMs) {
+        const start = Date.now();
+        await sleep(250);
+        let calm = 0;
+        while (Date.now() - start < maxMs) {
+            const busy = document.documentElement.classList.contains('shiny-busy');
+            calm = busy ? 0 : calm + 100;
+            if (calm >= 400) return;
+            await sleep(100);
+        }
+    }
+
+    function linkFor(value) {
+        const sel = '.nav-link[data-value="' + CSS.escape(value) + '"]';
+        return document.querySelector('#main_tabs ' + sel) || document.querySelector(sel);
+    }
+    function paneFor(link) {
+        const target = link.getAttribute('data-bs-target') || link.getAttribute('href');
+        return target ? document.querySelector(target) : null;
+    }
+    function showTab(link) {
+        if (window.bootstrap && bootstrap.Tab) bootstrap.Tab.getOrCreateInstance(link).show();
+        else link.click();
+    }
+
+    // Replace <select> clones with the selected text (clones lose their selection)
+    function freezeSelects(original, clone) {
+        const os = original.querySelectorAll('select');
+        clone.querySelectorAll('select').forEach((c, i) => {
+            const o = os[i];
+            const span = document.createElement('span');
+            span.className = 'print-select-value';
+            span.textContent = o ? Array.from(o.selectedOptions).map(x => x.text).join(', ') : '';
+            c.replaceWith(span);
+        });
+    }
+
+    // Make a clone inert so it can't interfere with the live app
+    function sanitize(clone, k, expand) {
+        clone.removeAttribute('id');
+        clone.querySelectorAll('[id]').forEach(el => el.removeAttribute('id'));
+        // Rename radio groups BEFORE insertion, so checked clones don't uncheck the live form
+        clone.querySelectorAll('input[type="radio"]').forEach(el => {
+            el.name = 'print_' + k + '_' + el.name;
+        });
+        clone.querySelectorAll('input, textarea, button').forEach(el => { el.disabled = true; });
+        clone.querySelectorAll('script').forEach(s => s.remove());
+        const shinyClasses = ['shiny-bound-input', 'shiny-bound-output', 'shiny-input-radiogroup',
+                              'shiny-input-checkboxgroup', 'shiny-html-output', 'recalculating'];
+        [clone, ...clone.querySelectorAll('[class]')].forEach(el => el.classList.remove(...shinyClasses));
+        // Undo the form-lock fade
+        clone.querySelectorAll('[style*="opacity"]').forEach(el => {
+            el.style.opacity = ''; el.style.pointerEvents = '';
+        });
+        if (expand) clone.querySelectorAll('details').forEach(d => { d.open = true; });
+        clone.classList.remove('tab-pane', 'fade');
+        clone.style.display = 'block';
+    }
+
+    function buildCover(cover) {
+        const c = document.createElement('div');
+        c.className = 'print-cover';
+        const h = document.createElement('h1');
+        h.textContent = cover.title;
+        c.appendChild(h);
+        const tbl = document.createElement('table');
+        tbl.className = 'print-cover-table';
+        (cover.rows || []).forEach(([k, v]) => {
+            const tr = tbl.insertRow();
+            const th = document.createElement('th'); th.textContent = k; tr.appendChild(th);
+            tr.insertCell().textContent = v;
+        });
+        c.appendChild(tbl);
+        if (cover.note) {
+            const p = document.createElement('p');
+            p.className = 'print-cover-note';
+            p.textContent = cover.note;
+            c.appendChild(p);
+        }
+        return c;
+    }
+
+    Shiny.addCustomMessageHandler('gaset_export_pdf', async function (msg) {
+        const prevTitle = document.title;
+        const active = document.querySelector('.nav-link.active[data-value]');
+        const old = document.getElementById('gaset-print-root');
+        if (old) old.remove();
+
+        // Page size / orientation for this export
+        let pageStyle = document.getElementById('gaset-print-page');
+        if (!pageStyle) {
+            pageStyle = document.createElement('style');
+            pageStyle.id = 'gaset-print-page';
+            document.head.appendChild(pageStyle);
+        }
+        pageStyle.textContent = '@page { size: ' + (msg.paper || 'letter') + ' ' +
+                                (msg.orientation || 'portrait') + '; margin: 0.5in; }';
+
+        const root = document.createElement('div');
+        root.id = 'gaset-print-root';
+        if (msg.cover) root.appendChild(buildCover(msg.cover));
+
+        for (let k = 0; k < msg.tabs.length; k++) {
+            const t = msg.tabs[k];
+            const link = linkFor(t.value);
+            if (!link) continue;
+            showTab(link);                       // forces Shiny to render hidden outputs
+            await waitForShinyIdle(msg.max_wait_ms || 8000);
+            const pane = paneFor(link);
+            if (!pane) continue;
+
+            const section = document.createElement('section');
+            section.className = 'print-section';
+            const h = document.createElement('h2');
+            h.className = 'print-section-title';
+            h.textContent = t.label;
+            section.appendChild(h);
+
+            const clone = pane.cloneNode(true);
+            freezeSelects(pane, clone);
+            sanitize(clone, k, msg.expand);
+            section.appendChild(clone);
+            root.appendChild(section);
+        }
+
+        if (active) showTab(active);             // restore the user's tab
+        document.body.appendChild(root);
+        if (msg.filename) document.title = msg.filename;   // default PDF filename
+
+        const cleanup = function () {
+            root.remove();
+            document.title = prevTitle;
+            window.removeEventListener('afterprint', cleanup);
+        };
+        window.addEventListener('afterprint', cleanup);
+
+        await sleep(300);
+        window.print();
+    });
+})();
+""")
+
 # ---------- Localization (stems + Yes/Partial/No only) ----------
 LANGS = {
     "en": {"name": "English", "yes": r"Yes", "partial": "Partially implemented", "no": "No",
@@ -1107,6 +1315,88 @@ def _on_ts_upload():
 def _on_ts_clear():
     ts_records.set([])
 
+# ---------- Report Export Reactive ----------
+
+
+EXPORT_TABS = [("assessment", "📝 Assessment"), ("scores", "📊 Scores"),
+               ("action_plan", "🧭 Action Plan"), ("trends", "📈 Trends"),
+               ("diagnostics", "🔧 Diagnostics")]
+export_prefs = reactive.value({"tabs": ["assessment", "scores", "action_plan", "trends"],
+                               "cover": True, "expand": False, "orientation": "portrait"})
+
+@reactive.effect
+@reactive.event(input.export_pdf)
+def _open_export_modal():
+    prefs = export_prefs.get()
+    core_ui.modal_show(core_ui.modal(
+        core_ui.p("Select the tabs to combine into one PDF (exported in tab order):"),
+        core_ui.input_checkbox_group("export_tabs", None, choices=dict(EXPORT_TABS),
+                                     selected=prefs["tabs"]),
+        core_ui.input_checkbox("export_cover", "Include cover page", prefs["cover"]),
+        core_ui.input_checkbox("export_expand",
+                               "Expand collapsed sections (rule trace, field map)", prefs["expand"]),
+        core_ui.input_radio_buttons("export_orientation", "Orientation",
+                                    {"portrait": "Portrait", "landscape": "Landscape"},
+                                    selected=prefs["orientation"], inline=True),
+        core_ui.tags.small("In the print dialog choose “Save as PDF” and enable "
+                           "“Background graphics” to keep score colors.", class_="text-muted"),
+        title="📄 Export to PDF", easy_close=True, size="m",
+        footer=core_ui.TagList(
+            core_ui.modal_button("Cancel"),
+            core_ui.input_action_button("export_go", "📄 Create PDF", class_="btn-success"))))
+
+@reactive.effect
+@reactive.event(input.export_go)
+async def _do_export():
+    chosen = list(input.export_tabs() or [])
+    if not chosen:
+        core_ui.notification_show("Select at least one tab to export.", type="warning", duration=4)
+        return
+    export_prefs.set({"tabs": chosen, "cover": input.export_cover(),
+                      "expand": input.export_expand(), "orientation": input.export_orientation()})
+    core_ui.modal_remove()
+
+    labels = dict(EXPORT_TABS)
+    meta = pdf_meta.get() or {}
+    facility = (input.ctx_facility() or "").strip()
+    stamp = date.today().isoformat()
+
+    overall = "—"
+    if parsed_domains.get():
+        _per, _domains, te, tp = all_scores()
+        if tp:
+            overall = f"{te:g} / {tp:g} ({te / tp * 100:.0f}%)"
+
+    safe_fac = re.sub(r"[^A-Za-z0-9_-]+", "_", facility).strip("_")
+    filename = "_".join(x for x in ["GASET_Report", safe_fac, stamp] if x)
+
+    cover = None
+    if input.export_cover():
+        cover = {
+            "title": "G-ASET Antibiotic Stewardship Assessment Report",
+            "rows": [["Facility", facility or "—"],
+                     ["Source PDF", meta.get("name", "—")],
+                     ["Language", meta.get("lang", "—")],
+                     ["Overall score", overall],
+                     ["Generated", stamp],
+                     ["Sections", ", ".join(labels[t] for t in chosen)]],
+            "note": "Draft decision-support output for SME review — not a substitute for "
+                    "clinical judgment or local guideline alignment.",
+        }
+
+    core_ui.notification_show("Preparing PDF — rendering selected tabs…", duration=3)
+    session = get_current_session()
+    if session is not None:
+        await session.send_custom_message("gaset_export_pdf", {
+            "tabs": [{"value": t, "label": labels[t]} for t in chosen],
+            "cover": cover,
+            "expand": bool(input.export_expand()),
+            "orientation": input.export_orientation(),
+            "paper": "letter",          # change to "A4" for international users
+            "filename": filename,
+            "max_wait_ms": 8000,
+        })
+
 # ---------- Calcs ----------
 @reactive.calc
 def all_scores():
@@ -1205,6 +1495,7 @@ with ui.sidebar():
 
     ui.input_action_button("toggle_lock", "🔒 Unlock form", class_="btn-warning", width="100%")
     ui.input_action_button("reset_form", "↺ Reset to PDF values", class_="btn-secondary", width="100%")
+    ui.input_action_button("export_pdf", "📄 Export to PDF", class_="btn-success", width="100%")
 
     @render.ui
     def lock_status():
@@ -1219,7 +1510,7 @@ with ui.sidebar():
 with ui.navset_card_tab(id="main_tabs"):
 
     # ---------------- Tab 1: Assessment ----------------
-    with ui.nav_panel("📝 Assessment"):
+    with ui.nav_panel("📝 Assessment", value = "assessment"):
         with ui.card():
             @render.ui
             def status_header():
@@ -1251,7 +1542,7 @@ with ui.navset_card_tab(id="main_tabs"):
         core_ui.div(id="dynamic_form_container")
 
     # ---------------- Tab 2: Scores ----------------
-    with ui.nav_panel("📊 Scores"):
+    with ui.nav_panel("📊 Scores", value = "score"):
         with ui.card():
             @render.ui
             def scores_header():
@@ -1321,7 +1612,7 @@ with ui.navset_card_tab(id="main_tabs"):
                               core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
 
     # ---------------- Tab 3: Action Plan ----------------
-    with ui.nav_panel("🧭 Action Plan"):
+    with ui.nav_panel("🧭 Action Plan", value = "action_plan"):
         with ui.layout_columns(col_widths=[4, 8]):
             with ui.card():
                 ui.card_header("⚙️ Facility context")
@@ -1402,7 +1693,7 @@ with ui.navset_card_tab(id="main_tabs"):
                             class_="table table-sm", style="font-size:0.85em;"))
 
     # ---------------- Tab 4: Trends (time series) ----------------
-    with ui.nav_panel("📈 Trends"):
+    with ui.nav_panel("📈 Trends", value = "trends"):
         with ui.layout_columns(col_widths=[5, 7]):
             with ui.card():
                 ui.card_header("📥 Add assessments")
@@ -1640,7 +1931,7 @@ with ui.navset_card_tab(id="main_tabs"):
                 yield buf.getvalue()
 
     # ---------------- Tab 5: Diagnostics ----------------
-    with ui.nav_panel("🔧 Diagnostics"):
+    with ui.nav_panel("🔧 Diagnostics", value = "diagnostics"):
         with ui.card():
             ui.card_header("🔧 AcroForm field map (diagnostic)")
 
