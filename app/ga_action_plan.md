@@ -1,9 +1,22 @@
 @@meta
-version: 2026-08 (DRAFT — pending SME validation & local guideline alignment)
+version: 2026-08b (DRAFT — item-aware gating; pending SME validation & local guideline alignment)
 maintainers: AMS/IPC SME working group
 tiers: foundational 0-40 | developing 40-70 | advanced 70-100
 domain_priority: 1 2 4 5 3
 @@endmeta
+
+<!--
+AUTHORING RULES (item-aware engine)
+  items=a,b    G-ASET items whose responses fully cover THIS recommendation's action.
+               All linked items 5/5  -> not repeated; listed under "Already in place".
+               Any linked item partial -> shown as "Strengthen: ..." with status line.
+  met_if=expr  Optional custom "already in place" rule (e.g. met_if=item35>=2.5).
+  show_if=expr Context/eligibility condition; supports & (and) and | (or).
+  tier=...     Item-linked rules: earliest tier at which the rule applies (a floor).
+               Unlinked rules: exact tiers targeted (unchanged behavior).
+  Only link items that fully cover the action; otherwise split the rule.
+  "VERIFY" = inferred link; confirm in Action Plan tab -> "Why these recommendations?".
+-->
 
 <!-- ============ DOMAIN 1: LEADERSHIP ============ -->
 
@@ -11,14 +24,19 @@ domain_priority: 1 2 4 5 3
 ### Secure written leadership commitment and name accountable leads
 - Obtain a brief **written statement** from facility leadership naming antibiotic stewardship (AS) as a priority.
 - Designate **co‑leads** (ideally a physician + a pharmacist); if unavailable, name the HCWs responsible for improving antibiotic use.
-- Charter an **AS committee** — stand‑alone or embedded in an existing IPC / Drug & Therapeutics committee — with multidisciplinary membership.
+<!-- TODO: link the G-ASET item on a written leadership statement once confirmed (likely item 1 — VERIFY). -->
 
-@@rec id=D1-F2 domain=1 tier=foundational,developing when=short priority=high show_if=item2<5
+@@rec id=D1-F1B domain=1 tier=foundational when=short priority=high items=4,6
+### Charter a multidisciplinary AS committee and team
+- Charter an **AS committee** — stand‑alone or embedded in an existing IPC / Drug & Therapeutics committee — with multidisciplinary membership.
+- Ensure the working team includes an **ID‑trained physician/clinician, a pharmacist, and clinical microbiology** input.
+
+@@rec id=D1-F2 domain=1 tier=foundational when=short priority=high items=2
 ### Add stewardship to the facility annual plan with at least one KPI
 - Insert an AS objective into the annual operating plan.
 - Define **one measurable KPI** (e.g., % of priority prescriptions with documented indication) and a reporting cadence to leadership.
 
-@@rec id=D1-F3 domain=1 tier=foundational,developing when=short priority=med show_if=item5<5
+@@rec id=D1-F3 domain=1 tier=foundational when=short priority=med items=5
 ### Establish a regular committee/team meeting cadence
 - Schedule **at least quarterly** committee meetings (monthly for the working team where feasible) with standing agenda items and minutes.
 
@@ -26,10 +44,16 @@ domain_priority: 1 2 4 5 3
 ### Formalize authority and protected time
 - Give the committee explicit **decision authority** (formulary, restrictions, order‑set changes).
 - Specify **protected time** for AS leads in job descriptions; pursue financial support where possible.
+<!-- TODO: link items on committee authority / protected time if present in Domain 1. -->
 
-@@rec id=D1-A1 domain=1 tier=advanced when=long priority=med
-### Embed accountability and external engagement
-- Add AS KPIs to leadership scorecards; publish an **annual accountability report**.
+@@rec id=D1-A1 domain=1 tier=advanced when=long priority=med items=37,38
+### Publish an annual stewardship accountability report
+- Report AS resources, performance, appropriateness, resistance and priorities **to facility management and national authorities**.
+- Add AS KPIs to leadership scorecards.
+<!-- VERIFY: items 37 (report contents) and 38 (report recipients). -->
+
+@@rec id=D1-A2 domain=1 tier=advanced when=long priority=low
+### Engage external networks
 - Join/lead **external networks or collaboratives** and contribute to national AS efforts.
 
 <!-- ============ DOMAIN 2: RESOURCES ============ -->
@@ -37,7 +61,10 @@ domain_priority: 1 2 4 5 3
 @@rec id=D2-F1 domain=2 tier=foundational when=short priority=high
 ### Provide the minimum working resources
 - Ensure the team has basic **workspace, communications, and reference access** (facility guidelines, WHO AWaRe classification).
-- Secure reliable access to **pharmacy data** (antibiotics purchased/dispensed) as the starting data source.
+
+@@rec id=D2-F1B domain=2 tier=foundational when=short priority=high items=18
+### Secure reliable antibiotic data sources
+- Start with **pharmacy data** (antibiotics purchased/dispensed); add a second source (administration records or EMR) as soon as feasible.
 
 @@rec id=D2-F2 domain=2 tier=foundational,developing when=medium priority=high show_if=ctx.micro==none
 ### Establish specimen referral for microbiology
@@ -58,6 +85,7 @@ domain_priority: 1 2 4 5 3
 - Implement **CDSS in the EHR** (prospective review prompts, pre‑authorization, IV‑to‑oral triggers) and generate **syndromic/cumulative antibiograms**.
 
 <!-- ============ DOMAIN 3: EDUCATION ============ -->
+<!-- TODO: Domain 3 items 26–30 are Yes/Partial/No. Link each to the matching rule below once verified. -->
 
 @@rec id=D3-F1 domain=3 tier=foundational when=short priority=med
 ### Add stewardship to onboarding and prescriber basics
@@ -76,30 +104,34 @@ domain_priority: 1 2 4 5 3
 
 <!-- ============ DOMAIN 4: STEWARDSHIP ACTIONS ============ -->
 
-@@rec id=D4-F1 domain=4 tier=foundational when=short priority=high show_if=item31<5
-### Develop 2–3 high‑yield local treatment guidelines
-- Start with the **commonest syndromes** (e.g., community‑acquired pneumonia, UTI, sepsis, surgical prophylaxis).
+@@rec id=D4-F1 domain=4 tier=foundational when=short priority=high items=31,32
+### Develop high‑yield local treatment guidelines
+- Cover the **commonest syndromes** (e.g., community‑acquired pneumonia, UTI, sepsis, surgical prophylaxis) — aim for at least four.
 - Each guideline must specify **first‑line agent, dose, duration, and alternatives** (e.g., penicillin allergy, oral options); align to the WHO AWaRe categories and any national guidance.
 
-@@rec id=D4-F2 domain=4 tier=foundational,developing when=short priority=high show_if=item44==0
+@@rec id=D4-F2 domain=4 tier=foundational when=short priority=high items=44
 ### Implement a documentation policy (quick win)
 - Require prescribers to document **indication, dose, and planned duration** in the record for every antibiotic. High impact, low cost, no technology required.
 
-@@rec id=D4-F3 domain=4 tier=foundational,developing when=short priority=high show_if=item39<5
+@@rec id=D4-F3 domain=4 tier=foundational when=short priority=high items=39
 ### Establish a facility formulary / approved antibiotic list
 - Create an **approved list** based on the national formulary and AWaRe; identify a small set of **restricted agents** for later pre‑authorization.
 
-@@rec id=D4-F4 domain=4 tier=foundational,developing when=short priority=med show_if=item36==0
+@@rec id=D4-F4 domain=4 tier=foundational when=short priority=med items=36
 ### Write SOPs for at least one core activity
 - Draft a **standard operating procedure** for one activity (audit & feedback, guideline development, or a testing protocol) to make practice repeatable.
 
-@@rec id=D4-F5 domain=4 tier=foundational when=medium priority=high
+@@rec id=D4-F5 domain=4 tier=foundational when=medium priority=high items=35 met_if=item35>=2.5
 ### Launch one core prescriber‑facing intervention
 - Choose **prospective audit & feedback** *or* **antibiotic time‑outs (48–72h review)** based on staffing — begin on 1–2 high‑use units before scaling.
 
-@@rec id=D4-D1 domain=4 tier=developing when=medium priority=med
+@@rec id=D4-D1 domain=4 tier=developing when=medium priority=med items=43
+### Enable nurse‑driven stewardship actions
+- Support nurses to apply **culturing criteria**, prompt **IV‑to‑oral** discussions and **antibiotic time‑outs**, and complete **allergy assessments**.
+
+@@rec id=D4-D2 domain=4 tier=developing when=medium priority=med
 ### Expand facility‑wide interventions
-- Add **IV‑to‑oral conversion, antibiotic allergy assessment/de‑labelling, duplicate‑therapy alerts**, and **nurse‑enabled** actions (culturing criteria, time‑out prompts).
+- Add **antibiotic allergy de‑labelling and duplicate‑therapy alerts**.
 - Operationalize **pre‑authorization** for restricted agents.
 
 @@rec id=D4-A1 domain=4 tier=advanced when=long priority=med show_if=ctx.micro==onsite
@@ -108,7 +140,7 @@ domain_priority: 1 2 4 5 3
 
 <!-- ============ DOMAIN 5: TRACKING & REPORTING ============ -->
 
-@@rec id=D5-F1 domain=5 tier=foundational when=short priority=high show_if=item54==0
+@@rec id=D5-F1 domain=5 tier=foundational when=short priority=high items=54
 ### Begin measuring antibiotic use with one metric
 - Start with a feasible metric: **Days of Therapy (DOT)** or **Defined Daily Doses (DDD)**, or a periodic **point‑prevalence survey (PPS)** if denominators are hard to obtain.
 
@@ -116,15 +148,15 @@ domain_priority: 1 2 4 5 3
 ### Track shortages and key resistance signals
 - Monitor **antibiotic shortages/stockouts**; report **susceptibility/resistance rates** for key indicator organisms where data exist.
 
-@@rec id=D5-F3 domain=5 tier=foundational,developing when=medium priority=high show_if=item66==0
+@@rec id=D5-F3 domain=5 tier=foundational when=medium priority=high items=66
 ### Develop and regularly update an antibiogram
 - Produce a **cumulative antibiogram**; update at least annually to inform empiric guidelines.
 
-@@rec id=D5-D1 domain=5 tier=developing when=medium priority=med show_if=item52<5
+@@rec id=D5-D1 domain=5 tier=developing when=medium priority=med items=52
 ### Institute routine audits with actionable feedback
 - Run regular **appropriateness audits / PPS** and return **specific action points** to prescribers, not just aggregate numbers.
 
-@@rec id=D5-A1 domain=5 tier=advanced when=long priority=med
+@@rec id=D5-A1 domain=5 tier=advanced when=long priority=med items=58
 ### Advance to outcome and unit‑level reporting
 - Stratify metrics **by unit/ward**; add outcome measures (**C. difficile rates, length of stay, mortality**); report to leadership on a fixed cycle.
 
