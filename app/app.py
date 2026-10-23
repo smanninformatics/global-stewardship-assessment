@@ -473,62 +473,78 @@ ITEM_FALLBACK = {6: "6. Antibiotic stewardship team composition (6A)",
                  35: "35. Stewardship interventions currently performed (35A)"}
 MAX_PER_ITEM = 5.0
 
-# ---------- Action plan engine (item-aware) ----------
-PHASES = [("short", "Phase 1 — Quick wins (0–3 months)"),
-          ("medium", "Phase 2 — Build capacity (3–12 months)"),
-          ("long", "Phase 3 — Advance & sustain (12+ months)")]
-PRIO_RANK = {"high": 0, "med": 1, "medium": 1, "low": 2}
-STATUS_LABEL = {"met": "✅ Met", "partial": "🟠 Partial", "not_met": "🔴 Not met"}
+# ---------- Action plan engine (four-tier model) ----------
+DEFAULT_TIERS = [("core_essential", "Core Essential"), ("core_standard", "Core Standard"),
+                 ("enhancement", "Enhancement"), ("advanced_enhancement", "Advanced Enhancement")]
+TIER_COLORS = {"core_essential": "#1f3864", "core_standard": "#2f5597",
+               "enhancement": "#3a7d44", "advanced_enhancement": "#6a3d9a"}
+CONTEXT_LABELS = {"micro": "access to a clinical microbiology laboratory",
+                  "ehr": "access to electronic data sources"}
+ACT_LETTERS = "ABCDEFGHIJKLMNOPQR"                  # item 35 activities (35A fields 1..18)
+ACT_POINTS = MAX_PER_ITEM / len(ACT_LETTERS)         # tier-progress weight per activity
+SIX_C_POINTS = MAX_PER_ITEM                          # 6C counted as a 5-point practice
+COMP_STATUS = {"met": "✅", "partial": "🟠", "not_met": "🔴", "unknown": "❓"}
+SLICE_LABELS = {"4@0-2.5": "Item 4 · at least 1 committee member role",
+                "4@2.5-5": "Item 4 · 8 or more committee member roles"}
+_TOKEN_RE = re.compile(r"^(\d+)(?:(C)|@([\d.]+)-([\d.]+)|:([A-R]+))?$")
+_ACT_LINE = re.compile(r"^\s*[-*]\s*\*\*([A-R])\.\*\*")
 
-def _rec_title(body):
-    m = re.search(r"^###\s*(.+)$", body, re.MULTILINE)
-    return m.group(1).strip() if m else "(untitled)"
+def _pts(x):
+    return f"{round(x, 1):g}"
+
+def _parse_components(spec):
+    comps, bad = [], []
+    for tok in [t.strip().upper() for t in spec.split(",") if t.strip()]:
+        m = _TOKEN_RE.match(tok)
+        if not m:
+            bad.append(tok)
+            continue
+        n = int(m.group(1))
+        if m.group(2):
+            comps.append({"kind": "flag6c", "item": n, "key": f"{n}C"})
+        elif m.group(3):
+            lo, hi = float(m.group(3)), float(m.group(4))
+            comps.append({"kind": "slice", "item": n, "lo": lo, "hi": hi, "key": f"{n}@{lo:g}-{hi:g}"})
+        elif m.group(5):
+            acts = sorted(set(m.group(5)))
+            comps.append({"kind": "acts", "item": n, "acts": acts, "key": f"{n}:{''.join(acts)}"})
+        else:
+            comps.append({"kind": "item", "item": n, "key": str(n)})
+    return comps, bad
 
 def parse_action_template(text):
-    meta = {"tiers": [("foundational", 0, 40), ("developing", 40, 70), ("advanced", 70, 100.01)],
-            "domain_priority": [1, 2, 4, 5, 3]}
+    meta = {"version": "", "tiers": list(DEFAULT_TIERS)}
     m = re.search(r"@@meta\s*(.*?)@@endmeta", text, re.DOTALL)
     if m:
         for line in m.group(1).splitlines():
             line = line.strip()
-            if line.startswith("tiers:"):
-                tiers = []
-                for part in line[6:].split("|"):
-                    mm = re.match(r"\s*(\w+)\s+(\d+)-(\d+)", part)
-                    if mm:
-                        hi = float(mm.group(3)) + (0.01 if mm.group(3) == "100" else 0)
-                        tiers.append((mm.group(1), float(mm.group(2)), hi))
+            if line.startswith("version:"):
+                meta["version"] = line[8:].strip()
+            elif line.startswith("tiers:"):
+                tiers = [tuple(s.strip() for s in part.split("=", 1))
+                         for part in line[6:].split("|") if "=" in part]
                 if tiers:
                     meta["tiers"] = tiers
-            elif line.startswith("domain_priority:"):
-                nums = [int(x) for x in re.findall(r"\d+", line)]
-                if nums:
-                    meta["domain_priority"] = nums
         text = text[m.end():]
     recs = []
     for part in re.split(r"(?m)^@@rec\s+", text)[1:]:
         header, _, body = part.partition("\n")
         hm = dict(re.findall(r"(\w+)=(\S+)", header))
-        body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()   # drop authoring comments
+        body = re.sub(r"<!--.*?-->", "", body, flags=re.DOTALL).strip()
+        first, _, rest = body.partition("\n")
+        if first.startswith("###"):
+            title, text_ = first.lstrip("#").strip(), rest.strip()
+        else:
+            title, text_ = "(untitled)", body
+        comps, bad = _parse_components(hm.get("items", ""))
         recs.append({
-            "id": hm.get("id", ""),
-            "domain": int(hm.get("domain", "0")),
-            "tier": [t for t in hm.get("tier", "").split(",") if t],
-            "when": hm.get("when", "short"),
-            "priority": hm.get("priority", "med"),
-            "show_if": hm.get("show_if", ""),
-            "met_if": hm.get("met_if", ""),
-            "items": [int(x) for x in re.findall(r"\d+", hm.get("items", ""))],
-            "title": _rec_title(body),
-            "body": body,
+            "id": hm.get("id", ""), "tier": hm.get("tier", ""),
+            "domain": int(hm["domain"]) if hm.get("domain", "").isdigit() else None,
+            "needs": [x for x in hm.get("needs", "").lower().split(",") if x],
+            "show_if": hm.get("show_if", ""), "met_if": hm.get("met_if", ""),
+            "components": comps, "bad_tokens": bad, "title": title, "text": text_,
         })
     return meta, recs
-
-def _tier_of(pct, tiers):
-    for name, lo, hi in tiers:
-        if lo <= pct < hi:
-            return name
-    return tiers[-1][0]
 
 def _eval_and(expr, env):
     for term in expr.split("&"):
@@ -550,173 +566,270 @@ def _eval_and(expr, env):
     return True
 
 def _eval_condition(expr, env):
-    """Supports '&' (and) and '|' (or); '&' binds tighter."""
     if not expr:
         return True
     return any(_eval_and(alt, env) for alt in expr.split("|"))
 
-def _item_status(n, per_item):
+def _eval_component(c, per_item, special):
+    n = c["item"]
+    if c["kind"] == "flag6c":
+        v = special.get("6C")
+        if v is None:
+            return dict(c, earned=0.0, possible=SIX_C_POINTS, status="unknown",
+                        label="6C · team leader designated (not readable from PDF)")
+        return dict(c, earned=SIX_C_POINTS if v else 0.0, possible=SIX_C_POINTS,
+                    status="met" if v else "not_met", label="6C · team leader designated")
+    if c["kind"] == "acts":
+        flags = list(special.get("35A") or [])
+        flags += [False] * (len(ACT_LETTERS) - len(flags))
+        done = [a for a in c["acts"] if flags[ACT_LETTERS.index(a)]]
+        k, tot = len(done), len(c["acts"])
+        status = "met" if k == tot else ("partial" if k else "not_met")
+        return dict(c, earned=k * ACT_POINTS, possible=tot * ACT_POINTS, status=status, done=done,
+                    label=f"35A · activities {', '.join(c['acts'])}: {k} of {tot} routinely conducted")
     e, p = per_item.get(n, (None, MAX_PER_ITEM))
     e, p = (e or 0.0), (p or MAX_PER_ITEM)
-    if e >= p:
-        return "met", e, p
-    if e > 0:
-        return "partial", e, p
-    return "not_met", e, p
+    if c["kind"] == "slice":
+        pts = c["hi"] - c["lo"]
+        earned = min(max(e - c["lo"], 0.0), pts)
+        status = "met" if earned >= pts - 1e-9 else ("partial" if earned > 0 else "not_met")
+        return dict(c, earned=earned, possible=pts, status=status,
+                    label=SLICE_LABELS.get(c["key"], f"Item {n} (points {c['lo']:g}–{c['hi']:g})"))
+    status = "met" if e >= p else ("partial" if e > 0 else "not_met")
+    return dict(c, earned=e, possible=p, status=status, label=f"Item {n}")
 
-def _focus_domains(dinfo, dprio):
-    order = {d: i for i, d in enumerate(dprio)}
-    def key(d):
-        info = dinfo[d]
-        enabler = d in (1, 2) and info["tier"] == "foundational"
-        return (0 if enabler else 1, info["pct"], order.get(d, 99))
-    return sorted(dinfo.keys(), key=key)
-
-def _rationale(d, info):
-    if d in (1, 2) and info["tier"] == "foundational":
-        return "foundational enabler — must be in place to sustain gains elsewhere"
-    if info["tier"] == "foundational":
-        return "largest gap; establish core structures first"
-    if info["tier"] == "developing":
-        return "partial capability — consolidate and expand"
-    return "advanced — focus on sustaining and refining"
-
-def evaluate_recommendations(per_item, domain_rows, ctx, template_text):
-    """Decide, for every template rule, whether it is shown, already in place, or not applicable."""
+def evaluate_tiers(per_item, special, ctx, template_text):
+    """Score every recommendation, group by tier, and compute tier/domain attainment."""
     meta, recs = parse_action_template(template_text)
-    tiers, dprio = meta["tiers"], meta["domain_priority"]
-    rank = {name: i for i, (name, _lo, _hi) in enumerate(tiers)}
-
-    dinfo, oe, op = {}, 0.0, 0.0
-    for dnum, name, de, dp in domain_rows:
-        pct = de / dp * 100 if dp else 0
-        dinfo[dnum] = {"pct": pct, "tier": _tier_of(pct, tiers),
-                       "name": name, "earned": de, "poss": dp}
-        oe += de; op += dp
-    overall_pct = oe / op * 100 if op else 0
-    overall_tier = _tier_of(overall_pct, tiers)
+    tier_keys = [k for k, _ in meta["tiers"]]
+    special = special or {}
+    ctx = ctx or {}
 
     env = {f"item{n}": (0 if e is None else e) for n, (e, _p) in per_item.items()}
-    env.update({f"domain{d}": i["pct"] for d, i in dinfo.items()})
-    env["overall"] = overall_pct
-    env.update({f"ctx.{k}": v for k, v in (ctx or {}).items()})
+    env.update({f"ctx.{k}": v for k, v in ctx.items()})
 
-    shown, in_place, skipped = [], [], []
+    problems, seen, evaluated = [], {}, []
     for base in recs:
-        cur_tier = overall_tier if base["domain"] == 0 else dinfo.get(base["domain"], {}).get("tier")
-        r = dict(base, cur_tier=cur_tier, carried=False, partial=False,
-                 statuses=[(n, *_item_status(n, per_item)) for n in base["items"]])
+        r = dict(base)
+        r["comps"] = [_eval_component(c, per_item, special) for c in r["components"]]
+        if r["domain"] is None:
+            r["domain"] = next((ITEM_DOMAIN[c["item"]] for c in r["comps"]
+                                if c["item"] in ITEM_DOMAIN), 0)
+        r["earned"] = sum(c["earned"] for c in r["comps"])
+        r["possible"] = sum(c["possible"] for c in r["comps"])
 
-        # 1) Maturity-tier eligibility
-        rec_ranks = [rank[t] for t in r["tier"] if t in rank]
-        if rec_ranks and cur_tier in rank:
-            if r["items"]:
-                # Item-linked: tier is a FLOOR — show documented gaps even at higher maturity
-                if rank[cur_tier] < min(rec_ranks):
-                    skipped.append((r, f"domain is '{cur_tier}'; rule starts at '{r['tier'][0]}'"))
-                    continue
-                r["carried"] = rank[cur_tier] > max(rec_ranks)
-            elif cur_tier not in r["tier"]:
-                skipped.append((r, f"domain tier '{cur_tier}' not targeted ({', '.join(r['tier'])})"))
-                continue
+        # Template consistency checks
+        if r["tier"] not in tier_keys:
+            problems.append(f"{r['id']}: unknown tier '{r['tier']}'")
+        problems += [f"{r['id']}: unrecognized item token '{t}'" for t in r["bad_tokens"]]
+        for c in r["comps"]:
+            if c["item"] not in CANONICAL:
+                problems.append(f"{r['id']}: item {c['item']} is not a G-ASET item")
+            keys = [f"35:{a}" for a in c["acts"]] if c["kind"] == "acts" else [c["key"]]
+            for k in keys:
+                if k in seen:
+                    problems.append(f"{k} is assigned to both {seen[k]} and {r['id']}")
+                seen[k] = r["id"]
 
-        # 2) Context / explicit eligibility
-        if not _eval_condition(r["show_if"], env):
-            skipped.append((r, f"show_if not satisfied: {r['show_if']}"))
-            continue
-
-        # 3) Already in place?
-        if r["met_if"]:
-            met = _eval_condition(r["met_if"], env)
-        elif r["statuses"]:
-            met = all(st == "met" for _n, st, _e, _p in r["statuses"])
+        missing = [k for k in r["needs"] if str(ctx.get(k, "yes")).lower() == "no"]
+        if missing:
+            r["outcome"] = "hidden"
+            r["reason"] = "requires " + " and ".join(CONTEXT_LABELS.get(k, k) for k in missing)
+        elif not _eval_condition(r["show_if"], env):
+            r["outcome"] = "hidden"
+            r["reason"] = f"show_if not satisfied: {r['show_if']}"
         else:
-            met = False
-        if met:
-            in_place.append(r)
+            if r["met_if"]:
+                met = _eval_condition(r["met_if"], env)
+            else:
+                met = bool(r["comps"]) and all(c["status"] == "met" for c in r["comps"])
+            if met:
+                r["outcome"], r["reason"] = "met", (f"met_if: {r['met_if']}" if r["met_if"]
+                                                    else "all linked practices in place")
+            elif any(c["earned"] > 0 for c in r["comps"]):
+                r["outcome"], r["reason"] = "partial", "some linked practices in place"
+            else:
+                r["outcome"], r["reason"] = "gap", "linked practices not in place"
+        evaluated.append(r)
+
+    # Coverage checks (every item and every 35 activity should be assigned once)
+    covered = {c["item"] for r in evaluated for c in r["comps"]}
+    uncovered = [n for n in sorted(CANONICAL) if n not in covered]
+    if uncovered:
+        problems.append("G-ASET items without a recommendation: " + ", ".join(map(str, uncovered)))
+    acts_cov = {a for r in evaluated for c in r["comps"] if c["kind"] == "acts" for a in c["acts"]}
+    if 35 in covered and len(acts_cov) < len(ACT_LETTERS):
+        problems.append("Item 35 activities not assigned: "
+                        + ", ".join(a for a in ACT_LETTERS if a not in acts_cov))
+
+    tiers = []
+    for key, label in meta["tiers"]:
+        trs = [r for r in evaluated if r["tier"] == key]
+        vis = [r for r in trs if r["outcome"] != "hidden"]
+        e, p = sum(r["earned"] for r in vis), sum(r["possible"] for r in vis)
+        by_dom = {}
+        for r in vis:
+            for c in r["comps"]:
+                d = ITEM_DOMAIN.get(c["item"])
+                if d is not None:
+                    acc = by_dom.setdefault(d, [0.0, 0.0])
+                    acc[0] += c["earned"]; acc[1] += c["possible"]
+        order = lambda r: (r["domain"], r["id"])
+        tiers.append({
+            "key": key, "label": label, "earned": e, "possible": p,
+            "pct": e / p * 100 if p else 0.0,
+            "gaps": sorted([r for r in vis if r["outcome"] != "met"], key=order),
+            "met": sorted([r for r in vis if r["outcome"] == "met"], key=order),
+            "hidden": sorted([r for r in trs if r["outcome"] == "hidden"], key=order),
+            "by_domain": by_dom,
+        })
+    return {"meta": meta, "tiers": tiers, "recs": evaluated, "problems": problems}
+
+def _rec_body(r):
+    """Drop item-35 activities that are already conducted and note them."""
+    done = {a for c in r["comps"] if c["kind"] == "acts" for a in c.get("done", [])}
+    if not done or r["outcome"] == "met":
+        return r["text"]
+    kept = []
+    for ln in r["text"].splitlines():
+        m = _ACT_LINE.match(ln)
+        if m and m.group(1) in done:
             continue
+        kept.append(ln)
+    return "\n".join(kept) + f"\n\n*Already routinely conducted: {', '.join(sorted(done))}.*"
 
-        r["partial"] = any(st != "not_met" for _n, st, _e, _p in r["statuses"])
-        shown.append(r)
+def _text_bar(pct, width=20):
+    filled = int(round(max(0.0, min(100.0, pct)) / 100 * width))
+    return "█" * filled + "░" * (width - filled)
 
-    return {"dinfo": dinfo, "oe": oe, "op": op, "overall_pct": overall_pct,
-            "overall_tier": overall_tier, "dprio": dprio,
-            "shown": shown, "in_place": in_place, "skipped": skipped}
-
-def _status_line(r):
-    if not r["statuses"]:
-        return ""
-    return "> **Current G‑ASET status:** " + " · ".join(
-        f"Item {n} {STATUS_LABEL[st]} ({e:g}/{p:g})" for n, st, e, p in r["statuses"])
-
-def _render_rec(r, dinfo):
-    dom = dinfo.get(r["domain"], {}).get("name", "Cross-cutting") if r["domain"] else "Cross-cutting"
-    flags = [dom.split(":")[0], r["priority"].upper()]
-    if r["partial"]:
-        flags.append("PARTIALLY IN PLACE")
-    if r["carried"]:
-        flags.append("EARLIER-STAGE GAP")
-    title = f"Strengthen: {r['title']}" if r["partial"] else r["title"]
-    _first, _, rest = r["body"].partition("\n")
-    parts = [f"### `[{' · '.join(flags)}]` {title}"]
-    status = _status_line(r)
-    if status:
-        parts.append(status)
-    if rest.strip():
-        parts.append(rest.strip())
-    return "\n\n".join(parts) + "\n"
-
-def build_action_plan(ev, facility=""):
-    dinfo, oe, op = ev["dinfo"], ev["oe"], ev["op"]
-    overall_pct, overall_tier = ev["overall_pct"], ev["overall_tier"]
-    focus = _focus_domains(dinfo, ev["dprio"])
-    dorder = {d: i for i, d in enumerate(focus)}
-
+def build_action_plan_md(ev, te, tp, facility="", ctx=None):
+    ctx = ctx or {}
+    yn = lambda k: "Yes" if str(ctx.get(k, "yes")).lower() != "no" else "No"
+    overall = te / tp * 100 if tp else 0
     out = [f"# G-ASET Antibiotic Stewardship Action Plan" + (f" — {facility}" if facility else ""),
+           "",
            f"*Generated {date.today().isoformat()}. **Draft decision‑support output for SME review** — "
-           f"not a substitute for clinical judgment or local guideline alignment.*\n",
-           "## Summary",
-           f"- **Overall:** {oe:g} / {op:g} ({overall_pct:.0f}%) — **{overall_tier.title()}**\n",
-           "| Domain | Score | % | Tier |", "|---|---|---|---|"]
-    for d in sorted(dinfo):
-        i = dinfo[d]
-        out.append(f"| {i['name']} | {i['earned']:g}/{i['poss']:g} | {i['pct']:.0f}% | {i['tier'].title()} |")
+           f"not a substitute for clinical judgment or local guideline alignment.*",
+           "", "## Summary", "",
+           f"- **Overall G-ASET score:** {te:g} / {tp:g} ({overall:.0f}%)",
+           f"- **Context:** clinical microbiology laboratory access: **{yn('micro')}** · "
+           f"electronic data sources: **{yn('ehr')}**", "",
+           "| Tier | Progress | Points | Recommendations complete | "
+           + " | ".join(f"D{d}" for d in DOMAIN_ITEMS) + " |",
+           "|---|---|---|---|" + "---|" * len(DOMAIN_ITEMS)]
+    for t in ev["tiers"]:
+        doms = []
+        for d in DOMAIN_ITEMS:
+            e, p = t["by_domain"].get(d, (0.0, 0.0))
+            doms.append(f"{e / p * 100:.0f}%" if p else "—")
+        out.append(f"| {t['label']} | `{_text_bar(t['pct'], 10)}` {t['pct']:.0f}% | "
+                   f"{_pts(t['earned'])}/{_pts(t['possible'])} | "
+                   f"{len(t['met'])}/{len(t['met']) + len(t['gaps'])} | " + " | ".join(doms) + " |")
     out.append("")
 
-    out.append("## Recommended focus sequence")
-    for n, d in enumerate(focus, 1):
-        i = dinfo[d]
-        out.append(f"{n}. **{i['name']}** ({i['pct']:.0f}%, {i['tier'].title()}) — {_rationale(d, i)}")
-    out.append("")
-
-    if ev["shown"]:
-        out.append("*Each recommendation shows the current G‑ASET responses for the items it addresses. "
-                   "🟠 Partial = strengthen what exists · 🔴 Not met = new action. "
-                   "Practices already fully in place are listed at the end and not repeated.*\n")
-
-    for phase_key, phase_title in PHASES:
-        items = [r for r in ev["shown"] if r["when"] == phase_key]
-        if not items:
-            continue
-        items.sort(key=lambda r: (PRIO_RANK.get(r["priority"], 1),
-                                  dorder.get(r["domain"], 99), r["id"]))
-        out.append(f"## {phase_title}")
-        out.extend(_render_rec(r, dinfo) for r in items)
-
-    if ev["in_place"]:
-        out.append("## ✅ Already in place — maintain")
-        out.append("*These recommendations were not repeated because the G‑ASET responses show "
-                   "the underlying practices are already established.*\n")
-        for r in sorted(ev["in_place"], key=lambda r: (r["domain"], r["id"])):
-            dom = f"D{r['domain']}" if r["domain"] else "Cross-cutting"
-            basis = ", ".join(f"item {n}" for n, *_ in r["statuses"]) or r["met_if"]
-            out.append(f"- **{r['title']}** ({dom}) — evidence: {basis}")
-        out.append("")
-
-    if not ev["shown"] and not ev["in_place"]:
-        out.append("_No recommendations matched. Check the template's tier/context bindings._")
+    for t in ev["tiers"]:
+        out += [f"## {t['label']} — {t['pct']:.0f}% complete", "",
+                f"`{_text_bar(t['pct'])}` {_pts(t['earned'])} / {_pts(t['possible'])} points", ""]
+        if not t["gaps"]:
+            out += ["_All recommendations in this tier are in place._", ""]
+        for r in t["gaps"]:
+            partial = r["outcome"] == "partial"
+            flag = "🟠 PARTIALLY IN PLACE" if partial else "🔴 NOT IN PLACE"
+            title = f"Strengthen: {r['title']}" if partial else r["title"]
+            out += [f"### `[D{r['domain']} · {flag}]` {title}", "",
+                    "> **Current status:** " + " · ".join(
+                        f"{COMP_STATUS[c['status']]} {c['label']} "
+                        f"({_pts(c['earned'])}/{_pts(c['possible'])} pts)" for c in r["comps"]),
+                    "", _rec_body(r), ""]
+        if t["met"]:
+            out += [f"#### ✅ Already in place ({len(t['met'])})", ""]
+            out += [f"- {r['title']} (D{r['domain']})" for r in t["met"]] + [""]
+        if t["hidden"]:
+            out += [f"#### 🚫 Not applicable in this context ({len(t['hidden'])})", ""]
+            out += [f"- {r['title']} — {r['reason']}" for r in t["hidden"]] + [""]
     return "\n".join(out)
 
+# ---------- Action plan UI helpers ----------
+_OUTCOME_STYLE = {"gap": ("🔴 Not in place", "#c62828"), "partial": ("🟠 Partially in place", "#ef6c00"),
+                  "met": ("✅ In place", "#2e7d32"), "hidden": ("🚫 Not applicable", "#757575")}
+_PRINT_EXACT = "-webkit-print-color-adjust:exact;print-color-adjust:exact;"
+
+def _chip(text, bg, fg="#fff"):
+    return core_ui.span(text, style=f"display:inline-block;padding:1px 8px;border-radius:10px;"
+                                    f"background:{bg};color:{fg};font-size:0.78em;font-weight:600;"
+                                    f"margin-right:6px;{_PRINT_EXACT}")
+
+def _progress(pct, dark=False, height=14):
+    pct = max(0.0, min(100.0, pct))
+    track = "rgba(255,255,255,0.3)" if dark else "#e9ecef"
+    return core_ui.div(
+        core_ui.div(
+            core_ui.div(style=f"width:{pct:.1f}%;height:100%;background:{band_color(pct)};"
+                              f"border-radius:7px;{_PRINT_EXACT}"),
+            style=f"flex:1;height:{height}px;background:{track};border-radius:7px;"
+                  f"overflow:hidden;{_PRINT_EXACT}"),
+        core_ui.span(f"{pct:.0f}%", style=f"min-width:3em;text-align:right;font-weight:700;"
+                                          f"color:{'#fff' if dark else '#212121'};"),
+        style="display:flex;align-items:center;gap:8px;")
+
+def _tier_banner(t):
+    n_total = len(t["met"]) + len(t["gaps"])
+    return core_ui.div(
+        core_ui.div(
+            core_ui.h4(t["label"], style="margin:0;color:#fff;"),
+            core_ui.span(f"{_pts(t['earned'])} / {_pts(t['possible'])} pts · "
+                         f"{len(t['met'])} of {n_total} recommendations complete",
+                         style="color:#fff;opacity:0.9;font-size:0.9em;"),
+            style="display:flex;justify-content:space-between;align-items:baseline;"
+                  "flex-wrap:wrap;gap:8px;margin-bottom:6px;"),
+        _progress(t["pct"], dark=True),
+        style=f"background:{TIER_COLORS.get(t['key'], '#37474f')};padding:12px 16px;"
+              f"border-radius:8px;margin:20px 0 10px 0;break-after:avoid;{_PRINT_EXACT}")
+
+def _rec_card(r):
+    label, col = _OUTCOME_STYLE[r["outcome"]]
+    title = f"Strengthen: {r['title']}" if r["outcome"] == "partial" else r["title"]
+    comp_lines = [core_ui.div(f"{COMP_STATUS[c['status']]} {c['label']} "
+                              f"({_pts(c['earned'])}/{_pts(c['possible'])} pts)",
+                              style="font-size:0.85em;") for c in r["comps"]]
+    return core_ui.div(
+        core_ui.div(_chip(f"D{r['domain']}", "#455a64"), _chip(label, col),
+                    _chip(r["id"], "#eceff1", "#37474f")),
+        core_ui.h5(title, style="margin:6px 0;"),
+        core_ui.div(*comp_lines, style="background:#f7f9fb;border-radius:6px;"
+                                       "padding:6px 10px;margin-bottom:6px;") if comp_lines else None,
+        core_ui.markdown(_rec_body(r)),
+        style=f"border:1px solid #dde3ea;border-left:5px solid {col};border-radius:6px;"
+              f"padding:10px 14px;margin-bottom:10px;break-inside:avoid;{_PRINT_EXACT}")
+
+def _plan_summary(ev, te, tp, ctx):
+    overall = te / tp * 100 if tp else 0
+    yn = lambda k: "Yes" if str(ctx.get(k, "yes")).lower() != "no" else "No"
+    head = [core_ui.tags.th("Tier"), core_ui.tags.th("Progress", style="min-width:180px;"),
+            core_ui.tags.th("Points", style="text-align:center;"),
+            core_ui.tags.th("Complete", style="text-align:center;")]
+    head += [core_ui.tags.th(f"D{d}", style="text-align:center;") for d in DOMAIN_ITEMS]
+    rows = []
+    for t in ev["tiers"]:
+        cells = [core_ui.tags.td(core_ui.strong(t["label"])), core_ui.tags.td(_progress(t["pct"])),
+                 core_ui.tags.td(f"{_pts(t['earned'])}/{_pts(t['possible'])}", style="text-align:center;"),
+                 core_ui.tags.td(f"{len(t['met'])}/{len(t['met']) + len(t['gaps'])}",
+                                 style="text-align:center;")]
+        for d in DOMAIN_ITEMS:
+            e, p = t["by_domain"].get(d, (0.0, 0.0))
+            cells.append(_pct_cell(e / p * 100, title=f"{_pts(e)}/{_pts(p)} pts") if p
+                         else core_ui.tags.td("—", style="text-align:center;color:#999;"))
+        rows.append(core_ui.tags.tr(*cells))
+    return core_ui.div(
+        core_ui.p(core_ui.strong("Overall G-ASET score: "), f"{te:g} / {tp:g} ({overall:.0f}%)",
+                  core_ui.tags.br(),
+                  core_ui.tags.small(f"Context — microbiology laboratory access: {yn('micro')} · "
+                                     f"electronic data sources: {yn('ehr')}", class_="text-muted")),
+        core_ui.tags.table(core_ui.tags.thead(core_ui.tags.tr(*head)), core_ui.tags.tbody(*rows),
+                           class_="table table-sm table-bordered align-middle"),
+        core_ui.tags.small("Tier progress = G-ASET points earned ÷ points possible for the practices "
+                           "in that tier (context-excluded practices omitted). Hover a domain cell "
+                           "for points.", class_="text-muted"))
 # ---------- Language detection ----------
 def detect_language(text):
     sample = text[:6000]
@@ -752,6 +865,21 @@ def _cb_on(v):
 def _is_35a_yes(v):
     return v is not None and str(v).lstrip("/").strip() == "0"
 
+def _read_6c(fields):
+    """True if any 6C (team leader) answer is Yes; None if no 6C fields exist.
+    VERIFY field names/values in the Diagnostics field map."""
+    names = [n for n in fields if re.match(r"^\s*6\s*C\b", str(n), re.IGNORECASE)]
+    if not names:
+        return None
+    for n in names:
+        v = fields[n].get("/V")
+        if v is None:
+            continue
+        s = str(v).lstrip("/").strip().lower()
+        if s in ("0", "yes", "y", "on", "true"):
+            return True
+    return False
+
 def read_by_schema(reader):
     fields = reader.get_fields() or {}
 
@@ -767,7 +895,9 @@ def read_by_schema(reader):
         options[n] = labels
         defaults[n] = [labels[i] for i, fn in enumerate(flds) if _cb_on(fv(fn))]
     special[6] = [i for i, fn in enumerate(SIX_A_FIELDS) if _cb_on(fv(fn))]
-    special[35] = sum(1 for fn in THIRTYFIVE_A_FIELDS if _is_35a_yes(fv(fn)))
+    special["35A"] = [_is_35a_yes(fv(fn)) for fn in THIRTYFIVE_A_FIELDS]   # A..R in order
+    special[35] = sum(special["35A"])
+    special["6C"] = _read_6c(fields)
     return options, defaults, special
 
 def schema_applies(reader):
@@ -1417,19 +1547,19 @@ def all_scores():
 
 @reactive.calc
 def action_plan_ctx():
-    return {"setting": input.ctx_setting(), "micro": input.ctx_micro(),
-            "ehr": input.ctx_ehr(), "team": input.ctx_team(),
-            "funding": input.ctx_funding(), "national": input.ctx_national()}
+    return {"micro": input.ctx_micro(), "ehr": input.ctx_ehr()}
 
 @reactive.calc
 def action_plan_eval():
-    per, domains, _te, _tp = all_scores()
-    return evaluate_recommendations(per, domains, action_plan_ctx(), ACTION_PLAN_TEMPLATE)
+    per, _domains, _te, _tp = all_scores()
+    return evaluate_tiers(per, pdf_special.get(), action_plan_ctx(), ACTION_PLAN_TEMPLATE)
 
 @reactive.calc
 def action_plan_md():
-    return build_action_plan(action_plan_eval(), facility=(input.ctx_facility() or "").strip())
-
+    _per, _domains, te, tp = all_scores()
+    return build_action_plan_md(action_plan_eval(), te, tp,
+                                facility=(input.ctx_facility() or "").strip(),
+                                ctx=action_plan_ctx())
 @reactive.calc
 def ts_dataset():
     """Dated, scored, chronologically sorted assessments for trend analysis."""
@@ -1612,23 +1742,24 @@ with ui.navset_card_tab(id="main_tabs"):
                               core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
 
     # ---------------- Tab 3: Action Plan ----------------
-    with ui.nav_panel("🧭 Action Plan", value = "action_plan"):
-        with ui.layout_columns(col_widths=[4, 8]):
+    with ui.nav_panel("🧭 Action Plan", value="action_plan"):
+        with ui.layout_columns(col_widths=[3, 9]):
             with ui.card():
                 ui.card_header("⚙️ Facility context")
                 ui.input_text("ctx_facility", "Facility name (optional)", "")
-                ui.input_select("ctx_setting", "Resource setting",
-                                {"resource_limited": "Resource-limited", "well_resourced": "Well-resourced"})
-                ui.input_select("ctx_micro", "Clinical microbiology access",
-                                {"none": "None", "offsite": "Off-site / referral", "onsite": "On-site"})
-                ui.input_select("ctx_ehr", "Electronic health record",
-                                {"none": "None", "partial": "Partial", "full": "Full"})
-                ui.input_select("ctx_team", "Formal AMS team",
-                                {"none": "None", "informal": "Informal", "formal": "Formal"})
-                ui.input_select("ctx_funding", "Dedicated AMS time/funding",
-                                {"none": "None", "some": "Some", "dedicated": "Dedicated"})
-                ui.input_select("ctx_national", "National AMS policy to align to",
-                                {"no": "No", "yes": "Yes"})
+                ui.input_radio_buttons(
+                    "ctx_micro",
+                    "Does the facility have access to a clinical microbiology laboratory "
+                    "(on-site or off-site)?",
+                    {"yes": "Yes", "no": "No"}, selected="yes", inline=True)
+                ui.input_radio_buttons(
+                    "ctx_ehr",
+                    "Does the facility have access to electronic data sources "
+                    "(e.g., electronic health record, electronic pharmacy or laboratory data)?",
+                    {"yes": "Yes", "no": "No"}, selected="yes", inline=True)
+                ui.input_switch("ap_show_completed", "Expand completed recommendations", False)
+                core_ui.tags.small("Recommendations that depend on a resource answered “No” are "
+                                   "hidden and excluded from tier progress.", class_="text-muted")
 
             with ui.card():
                 ui.card_header("🧭 Action Plan")
@@ -1643,55 +1774,79 @@ with ui.navset_card_tab(id="main_tabs"):
                     if not parsed_domains.get():
                         return core_ui.p("Upload a recognized G-ASET PDF to generate a plan.",
                                          class_="text-muted")
-                    return core_ui.markdown(action_plan_md())
-            with ui.card():
-                ui.card_header("🔍 Why these recommendations? (rule trace)")
-
-                @render.ui
-                def action_plan_trace():
-                    if not parsed_domains.get():
-                        return core_ui.p("Upload a recognized G-ASET PDF first.", class_="text-muted")
                     ev = action_plan_eval()
-                    stems = item_stems.get()
-                    rows = []
-
-                    def add(r, status, color, reason):
-                        if r["statuses"]:
-                            items_cell = core_ui.TagList(*[
-                                core_ui.div(f"{STATUS_LABEL[st]} ({e:g}/{p:g}) ",
-                                            core_ui.tags.small(_item_label(n, stems, 80)))
-                                for n, st, e, p in r["statuses"]])
+                    _per, _d, te, tp = all_scores()
+                    open_attr = {"open": ""} if input.ap_show_completed() else {}
+                    parts = [_plan_summary(ev, te, tp, action_plan_ctx())]
+                    for t in ev["tiers"]:
+                        parts.append(_tier_banner(t))
+                        if t["gaps"]:
+                            parts.extend(_rec_card(r) for r in t["gaps"])
                         else:
-                            items_cell = core_ui.tags.small("— no linked items (tier/context only)",
-                                                            class_="text-muted")
-                        rows.append(core_ui.tags.tr(
-                            core_ui.tags.td(core_ui.tags.code(r["id"])),
-                            core_ui.tags.td(r["title"]),
-                            core_ui.tags.td(core_ui.span(status, style=f"color:{color};font-weight:600;")),
-                            core_ui.tags.td(items_cell),
-                            core_ui.tags.td(core_ui.tags.small(reason))))
+                            parts.append(core_ui.p("✅ All recommendations in this tier are in place.",
+                                                   style="color:#2e7d32;font-weight:600;"))
+                        if t["met"]:
+                            parts.append(core_ui.tags.details(
+                                core_ui.tags.summary(f"✅ {len(t['met'])} completed recommendation(s) "
+                                                     f"— click to show",
+                                                     style="cursor:pointer;color:#2e7d32;font-weight:600;"),
+                                *[_rec_card(r) for r in t["met"]],
+                                style="margin:6px 0 10px 0;", **open_attr))
+                        if t["hidden"]:
+                            parts.append(core_ui.tags.details(
+                                core_ui.tags.summary(f"🚫 {len(t['hidden'])} not applicable in this context",
+                                                     style="cursor:pointer;color:#757575;"),
+                                core_ui.tags.ul(*[core_ui.tags.li(f"{r['title']} — {r['reason']}")
+                                                  for r in t["hidden"]], style="font-size:0.9em;"),
+                                style="margin:6px 0 10px 0;"))
+                    return core_ui.TagList(*parts)
 
-                    for r in ev["shown"]:
-                        reason = ("gap from an earlier tier, still open" if r["carried"]
-                                    else f"domain tier: {r['cur_tier']}")
-                        add(r, "Shown (strengthen)" if r["partial"] else "Shown", "#1565c0", reason)
-                    for r in ev["in_place"]:
-                        add(r, "Already in place", "#2e7d32",
-                            f"met_if: {r['met_if']}" if r["met_if"] else "all linked items 5/5")
-                    for r, why in ev["skipped"]:
-                        add(r, "Not applicable", "#757575", why)
+        with ui.card():
+            ui.card_header("🔍 Why these recommendations? (rule trace)")
 
-                    return core_ui.tags.details(
-                        core_ui.tags.summary(f"{len(ev['shown'])} shown · {len(ev['in_place'])} already in "
-                                                f"place · {len(ev['skipped'])} not applicable"),
-                        core_ui.tags.table(
-                            core_ui.tags.thead(core_ui.tags.tr(
-                                core_ui.tags.th("Rule"), core_ui.tags.th("Recommendation"),
-                                core_ui.tags.th("Outcome"), core_ui.tags.th("Linked G-ASET items"),
-                                core_ui.tags.th("Reason"))),
-                            core_ui.tags.tbody(*rows),
-                            class_="table table-sm", style="font-size:0.85em;"))
-
+            @render.ui
+            def action_plan_trace():
+                if not parsed_domains.get():
+                    return core_ui.p("Upload a recognized G-ASET PDF first.", class_="text-muted")
+                ev = action_plan_eval()
+                stems = item_stems.get()
+                tier_label = dict(ev["meta"]["tiers"])
+                rows = []
+                for r in ev["recs"]:
+                    label, col = _OUTCOME_STYLE[r["outcome"]]
+                    comps = core_ui.TagList(*[core_ui.div(
+                        f"{COMP_STATUS[c['status']]} {c['label']} "
+                        f"({_pts(c['earned'])}/{_pts(c['possible'])}) ",
+                        core_ui.tags.small(_item_label(c["item"], stems, 70), class_="text-muted"))
+                        for c in r["comps"]])
+                    rows.append(core_ui.tags.tr(
+                        core_ui.tags.td(core_ui.tags.code(r["id"])),
+                        core_ui.tags.td(tier_label.get(r["tier"], r["tier"])),
+                        core_ui.tags.td(r["title"]),
+                        core_ui.tags.td(core_ui.span(label, style=f"color:{col};font-weight:600;")),
+                        core_ui.tags.td(comps),
+                        core_ui.tags.td(core_ui.tags.small(r["reason"]))))
+                problems = (core_ui.div(
+                    core_ui.strong("⚠️ Template checks:"),
+                    core_ui.tags.ul(*[core_ui.tags.li(p) for p in ev["problems"]]),
+                    style="background:#fff3cd;border:1px solid #ffe08a;border-radius:6px;"
+                          "padding:8px 12px;margin-bottom:8px;")
+                    if ev["problems"] else
+                    core_ui.p("✅ Template checks passed: every G-ASET item and item-35 activity "
+                              "is assigned exactly once.", style="color:#2e7d32;"))
+                counts = {k: sum(1 for r in ev["recs"] if r["outcome"] == k)
+                          for k in ("gap", "partial", "met", "hidden")}
+                return core_ui.TagList(problems, core_ui.tags.details(
+                    core_ui.tags.summary(f"{counts['gap']} not in place · {counts['partial']} partial · "
+                                         f"{counts['met']} complete · {counts['hidden']} not applicable"),
+                    core_ui.tags.table(
+                        core_ui.tags.thead(core_ui.tags.tr(
+                            core_ui.tags.th("Rule"), core_ui.tags.th("Tier"),
+                            core_ui.tags.th("Recommendation"), core_ui.tags.th("Outcome"),
+                            core_ui.tags.th("Linked practices"), core_ui.tags.th("Reason"))),
+                        core_ui.tags.tbody(*rows),
+                        class_="table table-sm", style="font-size:0.85em;")))
+            
     # ---------------- Tab 4: Trends (time series) ----------------
     with ui.nav_panel("📈 Trends", value = "trends"):
         with ui.layout_columns(col_widths=[5, 7]):
