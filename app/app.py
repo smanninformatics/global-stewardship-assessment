@@ -8,7 +8,7 @@ import re
 import io
 import csv
 import html as _html
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from shiny.express import input, render, ui
@@ -262,6 +262,54 @@ core_ui.tags.script("""
 
         await sleep(300);
         window.print();
+    });
+})();
+""")
+
+# ---------- Custom Action Plan helper -----------
+
+core_ui.tags.style("""
+.ap-card:not(.ap-selected) .ap-fields { display: none; }
+.ap-card.ap-selected { background: #f5f9ff; }
+.ap-card .shiny-input-container:has(input[type="checkbox"]) { margin-bottom: 0; }
+.ap-only-selected .ap-card:not(.ap-selected),
+.ap-only-selected .ap-tier-empty,
+.ap-only-selected .ap-hidden-list,
+.ap-only-selected .ap-tier-allmet { display: none !important; }
+.print-field-value {
+    white-space: pre-wrap; border: 1px solid #ccc; border-radius: 4px;
+    padding: 4px 6px; min-height: 1.6em; background: #fff;
+}
+""")
+
+core_ui.tags.script("""
+(function () {
+    window._apOnly = false;
+    function refresh() {
+        const root = document.getElementById('action_plan_view');
+        if (!root) return;
+        root.classList.toggle('ap-only-selected', !!window._apOnly);
+        root.querySelectorAll('.ap-card').forEach(card => {
+            const cb = card.querySelector('input[type="checkbox"][id^="ap_sel_"]');
+            card.classList.toggle('ap-selected', !!(cb && cb.checked));
+        });
+        root.querySelectorAll('.ap-tier').forEach(t =>
+            t.classList.toggle('ap-tier-empty', !t.querySelector('.ap-card.ap-selected')));
+        if (window._apOnly) {
+            root.querySelectorAll('details').forEach(d => {
+                if (d.querySelector('.ap-card.ap-selected')) d.open = true;
+            });
+        }
+    }
+    document.addEventListener('change', function (e) {
+        if (e.target && e.target.id && e.target.id.startsWith('ap_sel_')) refresh();
+    });
+    $(document).on('shiny:value', function (e) {
+        if (e.name === 'action_plan_view') setTimeout(refresh, 50);
+    });
+    Shiny.addCustomMessageHandler('ap_only_selected', function (msg) {
+        window._apOnly = !!msg.on;
+        refresh();
     });
 })();
 """)
@@ -749,6 +797,162 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
             out += [f"- {r['title']} — {r['reason']}" for r in t["hidden"]] + [""]
     return "\n".join(out)
 
+def _custom_plan_rows(ev, store):
+    recs = {r["id"]: r for r in ev["recs"]}
+    tier_order = {k: i for i, (k, _l) in enumerate(ev["meta"]["tiers"])}
+    tier_label = dict(ev["meta"]["tiers"])
+    rows = []
+    for rid, e in store.items():
+        if not e.get("selected") or rid not in recs:
+            continue
+        r = recs[rid]
+        rows.append({"r": r, "tier": tier_label.get(r["tier"], r["tier"]),
+                     "owner": (e.get("owner") or "").strip(), "date": e.get("date") or "",
+                     "notes": (e.get("notes") or "").strip(),
+                     "status": _OUTCOME_STYLE[r["outcome"]][0]})
+    rows.sort(key=lambda x: (tier_order.get(x["r"]["tier"], 99), x["r"]["domain"], x["r"]["id"]))
+    return rows
+
+def build_custom_plan_md(ev, store, facility=""):
+    rows = _custom_plan_rows(ev, store)
+    out = ["# Customized Antibiotic Stewardship Action Plan" + (f" — {facility}" if facility else ""),
+           "", f"*Generated {date.today().isoformat()} from G-ASET results. "
+               f"Draft for facility review and approval.*", ""]
+    if not rows:
+        return "\n".join(out + ["_No recommendations selected._"])
+    out += ["## Plan overview", "",
+            "| # | Recommendation | Tier | Domain | Current status | Accountable owner | Target date |",
+            "|---|---|---|---|---|---|---|"]
+    for i, x in enumerate(rows, 1):
+        r = x["r"]
+        due = x["date"] or "—"
+        if _is_overdue(x["date"], r["outcome"]):
+            due += " ⚠️ past due"
+        out.append(f"| {i} | {_md_cell(r['title'])} | {x['tier']} | D{r['domain']} | {x['status']} | "
+                   f"{_md_cell(x['owner']) or '—'} | {due} |")
+    out += ["", "## Recommendation details", ""]
+    for i, x in enumerate(rows, 1):
+        r = x["r"]
+        notes = x["notes"].replace("\n", "  \n  ") if x["notes"] else "—"
+        out += [f"### {i}. {r['title']}", "",
+                f"- **Tier / domain:** {x['tier']} · {DOMAIN_TITLES.get(r['domain'], 'Cross-cutting')}",
+                f"- **Current status:** {x['status']}",
+                f"- **Accountable owner:** {x['owner'] or '—'}",
+                f"- **Target date of completion:** {x['date'] or '—'}",
+                f"- **Implementation notes:** {notes}",
+                "", "**Recommended action:**", "", _rec_body(r), ""]
+    return "\n".join(out)
+
+# ---------- Custom action plan state ----------
+plan_store = reactive.value({})        # {rec_id: {"selected", "owner", "date", "notes"}}
+plan_ui_version = reactive.value(0)    # bump to force the plan to re-render from plan_store
+_plan_seen = {}                        # last value seen per input id (prevents stale overwrites)
+_EMPTY_ENTRY = {"selected": False, "owner": "", "date": "", "notes": ""}
+_PLAN_FIELDS = (("selected", "ap_sel_"), ("owner", "ap_own_"),
+                ("date", "ap_date_"), ("notes", "ap_note_"))
+
+def _sid(rec_id):
+    """Rec id -> safe input-id suffix (e.g. 'CE-06C' -> 'CE_06C')."""
+    return re.sub(r"\W", "_", rec_id)
+
+def _md_cell(s):
+    return (s or "").replace("|", "\\|").replace("\n", " ")
+
+def _is_overdue(d, outcome):
+    try:
+        return outcome != "met" and date.fromisoformat(d) < date.today()
+    except Exception:
+        return False
+
+def _parse_import_date(s):
+    s = (s or "").strip()
+    for fmt in ("%Y-%m-%d", "%m/%d/%Y"):
+        try:
+            return datetime.strptime(s, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return ""
+
+@reactive.effect
+def _sync_plan_inputs():
+    """Copy changed plan inputs into plan_store (only genuine changes are accepted)."""
+    if not parsed_domains.get():
+        return
+    ev = action_plan_eval()
+    with reactive.isolate():
+        store = dict(plan_store.get())
+    changed = False
+    for r in ev["recs"]:
+        if r["outcome"] == "hidden":
+            continue
+        sid = _sid(r["id"])
+        entry = dict(store.get(r["id"], _EMPTY_ENTRY))
+        for field, prefix in _PLAN_FIELDS:
+            key = prefix + sid
+            try:
+                v = input[key]()
+            except Exception:
+                continue                       # input not rendered yet
+            v = bool(v) if field == "selected" else (v or "")
+            if key in _plan_seen and _plan_seen[key] == v:
+                continue                       # unchanged since last seen -> ignore
+            _plan_seen[key] = v
+            if entry.get(field) != v:
+                entry[field] = v
+                changed = True
+        store[r["id"]] = entry
+    if changed:
+        plan_store.set(store)
+
+@reactive.effect
+async def _push_only_selected():
+    on = bool(input.ap_only_selected())
+    session = get_current_session()
+    if session is not None:
+        await session.send_custom_message("ap_only_selected", {"on": on})
+
+@reactive.effect
+@reactive.event(input.ap_clear)
+def _on_plan_clear():
+    plan_store.set({})
+    plan_ui_version.set(plan_ui_version.get() + 1)
+    core_ui.notification_show("All plan selections cleared.", duration=3)
+
+@reactive.effect
+@reactive.event(input.ap_import)
+def _on_plan_import():
+    f = input.ap_import()
+    if not f:
+        return
+    valid = {r["id"] for r in parse_action_template(ACTION_PLAN_TEMPLATE)[1]}
+    try:
+        with open(f[0]["datapath"], newline="", encoding="utf-8-sig") as fh:
+            rows = list(csv.DictReader(fh))
+    except Exception as e:
+        core_ui.notification_show(f"Could not read plan file: {e}", type="error", duration=6)
+        return
+    store, n_ok, unknown = dict(plan_store.get()), 0, []
+    for row in rows:
+        row = {(k or "").strip().lower(): (v or "").strip() for k, v in row.items()}
+        rid = row.get("rec_id", "")
+        if rid not in valid:
+            if rid:
+                unknown.append(rid)
+            continue
+        store[rid] = {
+            "selected": row.get("selected", "yes").lower() not in ("no", "false", "0"),
+            "owner": row.get("accountable_owner", ""),
+            "date": _parse_import_date(row.get("target_date", "")),
+            "notes": row.get("implementation_notes", ""),
+        }
+        n_ok += 1
+    plan_store.set(store)
+    plan_ui_version.set(plan_ui_version.get() + 1)
+    msg = f"Loaded {n_ok} plan item(s)."
+    if unknown:
+        msg += f" Skipped unknown IDs: {', '.join(unknown[:5])}{'…' if len(unknown) > 5 else ''}"
+    core_ui.notification_show(msg, type="warning" if unknown else "message", duration=6)
+
 # ---------- Action plan UI helpers ----------
 _OUTCOME_STYLE = {"gap": ("🔴 Not in place", "#c62828"), "partial": ("🟠 Partially in place", "#ef6c00"),
                   "met": ("✅ In place", "#2e7d32"), "hidden": ("🚫 Not applicable", "#757575")}
@@ -786,21 +990,55 @@ def _tier_banner(t):
         style=f"background:{TIER_COLORS.get(t['key'], '#37474f')};padding:12px 16px;"
               f"border-radius:8px;margin:20px 0 10px 0;break-after:avoid;{_PRINT_EXACT}")
 
-def _rec_card(r):
+def _plan_fields(r, entry):
+    sid = _sid(r["id"])
+    did = f"ap_date_{sid}"
+    return core_ui.div(
+        core_ui.div(
+            core_ui.div(
+                core_ui.input_text(f"ap_own_{sid}", "Accountable owner",
+                                   value=entry.get("owner", ""), placeholder="Name and/or role",
+                                   width="100%"),
+                class_="col-md-7"),
+            core_ui.div(
+                core_ui.tags.label("Target date of completion", for_=did, class_="form-label"),
+                core_ui.tags.input(
+                    type="date", id=did, value=entry.get("date", ""), class_="form-control",
+                    onchange="Shiny.setInputValue(this.id, this.value, {priority: 'event'});"),
+                class_="col-md-5 mb-3"),
+            class_="row g-2"),
+        core_ui.input_text_area(f"ap_note_{sid}", "Implementation notes",
+                                value=entry.get("notes", ""), rows=3, width="100%",
+                                placeholder="Approach, resources, milestones, barriers…"),
+        class_="ap-fields",
+        style="border-top:1px dashed #c5d3e3;margin-top:8px;padding-top:8px;")
+
+def _rec_card(r, entry=None):
     label, col = _OUTCOME_STYLE[r["outcome"]]
     title = f"Strengthen: {r['title']}" if r["outcome"] == "partial" else r["title"]
+    selectable = entry is not None
+    selected = bool(selectable and entry.get("selected"))
     comp_lines = [core_ui.div(f"{COMP_STATUS[c['status']]} {c['label']} "
                               f"({_pts(c['earned'])}/{_pts(c['possible'])} pts)",
                               style="font-size:0.85em;") for c in r["comps"]]
-    return core_ui.div(
+    header = core_ui.div(
         core_ui.div(_chip(f"D{r['domain']}", "#455a64"), _chip(label, col),
                     _chip(r["id"], "#eceff1", "#37474f")),
+        core_ui.input_checkbox(f"ap_sel_{_sid(r['id'])}", "Add to my plan", value=selected)
+        if selectable else None,
+        style="display:flex;justify-content:space-between;align-items:flex-start;"
+              "gap:8px;flex-wrap:wrap;")
+    return core_ui.div(
+        header,
         core_ui.h5(title, style="margin:6px 0;"),
         core_ui.div(*comp_lines, style="background:#f7f9fb;border-radius:6px;"
                                        "padding:6px 10px;margin-bottom:6px;") if comp_lines else None,
         core_ui.markdown(_rec_body(r)),
+        _plan_fields(r, entry) if selectable else None,
+        class_="ap-card" + (" ap-selected" if selected else ""),
         style=f"border:1px solid #dde3ea;border-left:5px solid {col};border-radius:6px;"
-              f"padding:10px 14px;margin-bottom:10px;break-inside:avoid;{_PRINT_EXACT}")
+              f"padding:10px 14px;margin-bottom:10px;break-inside:avoid;{_PRINT_EXACT}",
+        **{"data-rec": r["id"]})
 
 def _plan_summary(ev, te, tp, ctx):
     overall = te / tp * 100 if tp else 0
@@ -1760,6 +1998,52 @@ with ui.navset_card_tab(id="main_tabs"):
                 ui.input_switch("ap_show_completed", "Expand completed recommendations", False)
                 core_ui.tags.small("Recommendations that depend on a resource answered “No” are "
                                    "hidden and excluded from tier progress.", class_="text-muted")
+                core_ui.tags.hr()
+                core_ui.h6("📝 My action plan")
+
+                @render.ui
+                def ap_plan_status():
+                    store = plan_store.get()
+                    sel = [k for k, v in store.items() if v.get("selected")]
+                    if not sel:
+                        return core_ui.p("Tick “Add to my plan” on any recommendation to start "
+                                         "building a customized plan.", class_="text-muted small")
+                    no_owner = sum(1 for k in sel if not (store[k].get("owner") or "").strip())
+                    no_date = sum(1 for k in sel if not store[k].get("date"))
+                    overdue = sum(1 for k in sel if _is_overdue(store[k].get("date", ""), "gap"))
+                    notes = [f"{no_owner} without an owner"] if no_owner else []
+                    notes += [f"{no_date} without a target date"] if no_date else []
+                    notes += [f"⚠️ {overdue} past due"] if overdue else []
+                    return core_ui.p(core_ui.strong(f"{len(sel)} recommendation(s) selected"),
+                                     core_ui.tags.br(),
+                                     core_ui.tags.small(" · ".join(notes) or "✅ All have owners and dates",
+                                                        class_="text-muted"))
+
+                ui.input_switch("ap_only_selected", "Show only my selected recommendations", False)
+
+                @render.download(label="⬇️ My plan (.md)",
+                                 filename=lambda: f"gaset_custom_plan_{date.today().isoformat()}.md")
+                def download_custom_plan_md():
+                    yield build_custom_plan_md(action_plan_eval(), plan_store.get(),
+                                               facility=(input.ctx_facility() or "").strip())
+
+                @render.download(label="⬇️ My plan (.csv)",
+                                 filename=lambda: f"gaset_custom_plan_{date.today().isoformat()}.csv")
+                def download_custom_plan_csv():
+                    buf = io.StringIO(); w = csv.writer(buf)
+                    w.writerow(["rec_id", "selected", "tier", "domain", "title", "current_status",
+                                "accountable_owner", "target_date", "implementation_notes",
+                                "recommended_action"])
+                    for x in _custom_plan_rows(action_plan_eval(), plan_store.get()):
+                        r = x["r"]
+                        w.writerow([r["id"], "yes", x["tier"], r["domain"], r["title"],
+                                    x["status"].split(" ", 1)[-1], x["owner"], x["date"],
+                                    x["notes"], _rec_body(r)])
+                    yield "\ufeff" + buf.getvalue()      # BOM so Excel shows accents correctly
+
+                ui.input_file("ap_import", "Resume a saved plan (.csv)", accept=[".csv"], multiple=False)
+                ui.input_action_button("ap_clear", "Clear all selections",
+                                       class_="btn-outline-danger btn-sm")
 
             with ui.card():
                 ui.card_header("🧭 Action Plan")
@@ -1776,29 +2060,36 @@ with ui.navset_card_tab(id="main_tabs"):
                                          class_="text-muted")
                     ev = action_plan_eval()
                     _per, _d, te, tp = all_scores()
+                    _ = plan_ui_version.get()                  # re-render after import / clear
+                    with reactive.isolate():                   # typing never triggers a re-render
+                        store = plan_store.get()
+                    entry = lambda r: store.get(r["id"], _EMPTY_ENTRY)
                     open_attr = {"open": ""} if input.ap_show_completed() else {}
+
                     parts = [_plan_summary(ev, te, tp, action_plan_ctx())]
                     for t in ev["tiers"]:
-                        parts.append(_tier_banner(t))
+                        tier_parts = [_tier_banner(t)]
                         if t["gaps"]:
-                            parts.extend(_rec_card(r) for r in t["gaps"])
+                            tier_parts.extend(_rec_card(r, entry(r)) for r in t["gaps"])
                         else:
-                            parts.append(core_ui.p("✅ All recommendations in this tier are in place.",
-                                                   style="color:#2e7d32;font-weight:600;"))
+                            tier_parts.append(core_ui.p(
+                                "✅ All recommendations in this tier are in place.",
+                                class_="ap-tier-allmet", style="color:#2e7d32;font-weight:600;"))
                         if t["met"]:
-                            parts.append(core_ui.tags.details(
+                            tier_parts.append(core_ui.tags.details(
                                 core_ui.tags.summary(f"✅ {len(t['met'])} completed recommendation(s) "
                                                      f"— click to show",
                                                      style="cursor:pointer;color:#2e7d32;font-weight:600;"),
-                                *[_rec_card(r) for r in t["met"]],
+                                *[_rec_card(r, entry(r)) for r in t["met"]],
                                 style="margin:6px 0 10px 0;", **open_attr))
                         if t["hidden"]:
-                            parts.append(core_ui.tags.details(
+                            tier_parts.append(core_ui.tags.details(
                                 core_ui.tags.summary(f"🚫 {len(t['hidden'])} not applicable in this context",
                                                      style="cursor:pointer;color:#757575;"),
                                 core_ui.tags.ul(*[core_ui.tags.li(f"{r['title']} — {r['reason']}")
                                                   for r in t["hidden"]], style="font-size:0.9em;"),
-                                style="margin:6px 0 10px 0;"))
+                                class_="ap-hidden-list", style="margin:6px 0 10px 0;"))
+                        parts.append(core_ui.div(*tier_parts, class_="ap-tier"))
                     return core_ui.TagList(*parts)
 
         with ui.card():
