@@ -2048,26 +2048,7 @@ with ui.navset_card_tab(id="main_tabs"):
                 w.writerow(["OVERALL", f"{te:g}", f"{tp:g}", f"{(te/tp*100 if tp else 0):.1f}%"])
                 yield buf.getvalue()
 
-        with ui.card():
-            ui.card_header("🧩 Table items scored from the PDF (6A, 35A)")
-
-            @render.ui
-            def special_view():
-                special = pdf_special.get()
-                per, _, _, _ = all_scores()
-                if not parsed_domains.get():
-                    return core_ui.p("Upload a recognized G-ASET PDF to see these.", class_="text-muted")
-                e6, _ = per.get(6, (None, None))
-                e35, _ = per.get(35, (None, None))
-                roles = [SIX_A_LABELS[i] for i in special.get(6, [])]
-                n35 = special.get(35, 0)
-                return core_ui.TagList(
-                    core_ui.p(core_ui.strong("Item 6A "), f"→ {e6:g} / 5" if e6 is not None else "—",
-                              core_ui.tags.br(),
-                              core_ui.tags.small(f"Selected roles: {', '.join(roles) if roles else 'none'}")),
-                    core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
-                              core_ui.tags.br(),
-                              core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
+        
         with ui.card():
             ui.card_header("📊 Domain score chart")
 
