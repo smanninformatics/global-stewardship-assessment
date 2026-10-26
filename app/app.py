@@ -1998,7 +1998,6 @@ with ui.navset_card_tab(id="main_tabs"):
                             core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
                                       core_ui.tags.br(),
                                       core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
-                with ui.card():
 
     # ---------------- Tab 2: Scores ----------------
     with ui.nav_panel("📊 Scores", value = "score"):
