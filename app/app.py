@@ -1391,6 +1391,8 @@ def band_color(pct):
 def band_text_color(pct):
     return "#212121" if 50 < pct <= 80 else "#ffffff"
 
+
+
 def svg_trend_chart(pts, show_domains=True, width=900, height=420):
     """Dependency-free SVG line chart of domain/overall % over time."""
     esc = _html.escape
@@ -1490,6 +1492,73 @@ def _pct_cell(pct, title=""):
         f"{pct:.0f}%", title=title,
         style=(f"background:{band_color(pct)};color:{band_text_color(pct)};text-align:center;"
                f"font-weight:600;-webkit-print-color-adjust:exact;print-color-adjust:exact;"))
+
+def _truncate(s, n):
+    return s if len(s) <= n else s[:n - 1] + "…"
+
+def svg_domain_bar_chart(domains, te, tp, overall_label="OVERALL", width=900):
+    """Horizontal bar chart of domain % with traffic-light colors (dependency-free SVG)."""
+    esc = _html.escape
+    rows = [(f"D{d} · {name.split(': ', 1)[-1]}", de, dp, False) for d, name, de, dp in domains]
+    rows.append((overall_label, te, tp, True))
+
+    L, R, T, BH, GAP, EXTRA = 330, 120, 16, 26, 12, 14
+    pw = width - L - R
+    ys, y = [], T
+    for row in rows:
+        if row[3]:                 # extra space before the OVERALL bar
+            y += EXTRA
+        ys.append(y)
+        y += BH + GAP
+    plot_top, plot_bottom = T - 6, y - GAP + 6
+    height = plot_bottom + 64
+
+    def X(v):
+        return L + max(0.0, min(100.0, v)) / 100 * pw
+
+    s = [f'<svg viewBox="0 0 {width} {height}" width="100%" xmlns="http://www.w3.org/2000/svg" '
+         f'style="max-width:{width}px;font-family:system-ui,-apple-system,Segoe UI,sans-serif;'
+         f'font-size:12px;" role="img" aria-label="G-ASET domain scores">']
+
+    # Traffic-light bands
+    for lo, hi, col in ((0, 50, "#c62828"), (50, 80, "#f9a825"), (80, 100, "#2e7d32")):
+        s.append(f'<rect x="{X(lo):.1f}" y="{plot_top}" width="{X(hi) - X(lo):.1f}" '
+                 f'height="{plot_bottom - plot_top}" fill="{col}" fill-opacity="0.07"/>')
+    # Gridlines + x labels
+    for v in range(0, 101, 20):
+        x = X(v)
+        s.append(f'<line x1="{x:.1f}" y1="{plot_top}" x2="{x:.1f}" y2="{plot_bottom}" stroke="#e0e0e0"/>')
+        s.append(f'<text x="{x:.1f}" y="{plot_bottom + 16}" text-anchor="middle" fill="#555">{v}%</text>')
+    for v in (50, 80):
+        s.append(f'<line x1="{X(v):.1f}" y1="{plot_top}" x2="{X(v):.1f}" y2="{plot_bottom}" '
+                 f'stroke="#888" stroke-dasharray="4 3"/>')
+    # Separator above OVERALL
+    sep_y = ys[-1] - (EXTRA + GAP) / 2
+    s.append(f'<line x1="10" y1="{sep_y:.1f}" x2="{width - 10}" y2="{sep_y:.1f}" stroke="#bbb"/>')
+
+    for (label, e, p, is_overall), y in zip(rows, ys):
+        pct = e / p * 100 if p else 0.0
+        tip = esc(f"{label}: {e:g} / {p:g} points ({pct:.1f}%)")
+        weight = 700 if is_overall else 400
+        stroke, sw = ("#000", 1.5) if is_overall else ("#333", 0.5)
+        s.append(f'<text x="{L - 10}" y="{y + BH / 2 + 4:.1f}" text-anchor="end" fill="#222" '
+                 f'font-weight="{weight}">{esc(_truncate(label, 48))}<title>{tip}</title></text>')
+        s.append(f'<rect x="{L}" y="{y}" width="{max(X(pct) - L, 1.5):.1f}" height="{BH}" rx="3" '
+                 f'fill="{band_color(pct)}" stroke="{stroke}" stroke-width="{sw}">'
+                 f'<title>{tip}</title></rect>')
+        s.append(f'<text x="{X(pct) + 6:.1f}" y="{y + BH / 2 + 4:.1f}" fill="#222" '
+                 f'font-weight="{weight}">{pct:.0f}%  ({e:g}/{p:g})</text>')
+
+    s.append(f'<text x="{L + pw / 2:.1f}" y="{plot_bottom + 34}" text-anchor="middle" '
+             f'fill="#333">Score (%)</text>')
+    # Legend
+    lx, ly = L, plot_bottom + 54
+    for i, (col, lab) in enumerate((("#c62828", "≤ 50%"), ("#f9a825", "51–80%"), ("#2e7d32", "> 80%"))):
+        x = lx + i * 110
+        s.append(f'<rect x="{x}" y="{ly - 10}" width="14" height="14" rx="2" fill="{col}"/>')
+        s.append(f'<text x="{x + 20}" y="{ly + 1}" fill="#333">{lab}</text>')
+    s.append("</svg>")
+    return "".join(s)
 
 # ---------- Action plan template ----------
 try:
@@ -1909,6 +1978,28 @@ with ui.navset_card_tab(id="main_tabs"):
 
         core_ui.div(id="dynamic_form_container")
 
+        with ui.card():
+                    ui.card_header("🧩 Table items scored from the PDF (6A, 35A)")
+        
+                    @render.ui
+                    def special_view():
+                        special = pdf_special.get()
+                        per, _, _, _ = all_scores()
+                        if not parsed_domains.get():
+                            return core_ui.p("Upload a recognized G-ASET PDF to see these.", class_="text-muted")
+                        e6, _ = per.get(6, (None, None))
+                        e35, _ = per.get(35, (None, None))
+                        roles = [SIX_A_LABELS[i] for i in special.get(6, [])]
+                        n35 = special.get(35, 0)
+                        return core_ui.TagList(
+                            core_ui.p(core_ui.strong("Item 6A "), f"→ {e6:g} / 5" if e6 is not None else "—",
+                                      core_ui.tags.br(),
+                                      core_ui.tags.small(f"Selected roles: {', '.join(roles) if roles else 'none'}")),
+                            core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
+                                      core_ui.tags.br(),
+                                      core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
+                with ui.card():
+
     # ---------------- Tab 2: Scores ----------------
     with ui.nav_panel("📊 Scores", value = "score"):
         with ui.card():
@@ -1978,6 +2069,16 @@ with ui.navset_card_tab(id="main_tabs"):
                     core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
                               core_ui.tags.br(),
                               core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
+        with ui.card():
+            ui.card_header("📊 Domain score chart")
+
+            @render.ui
+            def domain_score_chart():
+                cfg = LANGS[current_lang.get()]
+                if not parsed_domains.get():
+                    return core_ui.p(cfg["ui_scores_later"], class_="text-muted")
+                _per, domains, te, tp = all_scores()
+                return core_ui.HTML(svg_domain_bar_chart(domains, te, tp, cfg["ui_overall"]))
 
     # ---------------- Tab 3: Action Plan ----------------
     with ui.nav_panel("🧭 Action Plan", value="action_plan"):
