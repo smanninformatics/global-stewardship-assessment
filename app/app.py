@@ -330,7 +330,8 @@ LANGS = {
            "ui_parsed": "✅ Recognized G-ASET form — {nq} scored items (language: {lang}).",
            "ui_unlock_btn": "🔒 Unlock form", "ui_lock_btn": "🔓 Lock form",
            "ui_locked_msg": "🔒 Form is locked (read-only).",
-           "ui_unlocked_msg": "🔓 Form is unlocked (editable)."},
+           "ui_unlocked_msg": "🔓 Form is unlocked (editable).",
+           "ui_blank": "Not answered"},
     "es": {"name": "Español", "yes": r"S[íi]", "partial": "Parcialmente implementado", "no": "No",
            "domain_kw": r"Secci[oó]n", "select_all": r"[Ss]eleccione todo lo que corresponda",
            "answer_questions": r"Responda las preguntas",
@@ -345,7 +346,8 @@ LANGS = {
            "ui_parsed": "✅ Formulario G-ASET reconocido — {nq} ítems (idioma: {lang}).",
            "ui_unlock_btn": "🔒 Desbloquear", "ui_lock_btn": "🔓 Bloquear",
            "ui_locked_msg": "🔒 Formulario bloqueado (solo lectura).",
-           "ui_unlocked_msg": "🔓 Formulario desbloqueado (editable)."},
+           "ui_unlocked_msg": "🔓 Formulario desbloqueado (editable).",
+           "ui_blank": "Sin respuesta"},
     "fr": {"name": "Français", "yes": r"Oui", "partial": "Partiellement mis en œuvre", "no": "Non",
            "domain_kw": r"Domaine",
            "select_all": r"s[ée]lectionnez tout ce qui s'applique|cochez toutes les cases applicables",
@@ -361,7 +363,8 @@ LANGS = {
            "ui_parsed": "✅ Formulaire G-ASET reconnu — {nq} items (langue : {lang}).",
            "ui_unlock_btn": "🔒 Déverrouiller", "ui_lock_btn": "🔓 Verrouiller",
            "ui_locked_msg": "🔒 Formulaire verrouillé (lecture seule).",
-           "ui_unlocked_msg": "🔓 Formulaire déverrouillé (modifiable)."},
+           "ui_unlocked_msg": "🔓 Formulaire déverrouillé (modifiable).",
+           "ui_blank": "Sans réponse"},
     "pt": {"name": "Português", "yes": r"Sim", "partial": "Parcialmente implementado", "no": r"N[ãa]o",
            "domain_kw": r"Dom[íi]nio",
            "select_all": r"selecione todas as op[cç][õo]es aplic[áa]veis|marque todas que se aplicam",
@@ -377,7 +380,8 @@ LANGS = {
            "ui_parsed": "✅ Formulário G-ASET reconhecido — {nq} itens (idioma: {lang}).",
            "ui_unlock_btn": "🔒 Desbloquear", "ui_lock_btn": "🔓 Bloquear",
            "ui_locked_msg": "🔒 Formulário bloqueado (somente leitura).",
-           "ui_unlocked_msg": "🔓 Formulário desbloqueado (editável)."},
+           "ui_unlocked_msg": "🔓 Formulário desbloqueado (editável).",
+           "ui_blank": "Sem resposta"},
 }
 
 # ---------- Canonical schema ----------
@@ -521,6 +525,7 @@ ITEM_FALLBACK = {6: "6. Antibiotic stewardship team composition (6A)",
                  35: "35. Stewardship interventions currently performed (35A)"}
 MAX_PER_ITEM = 5.0
 
+
 # ---------- Action plan engine (four-tier model) ----------
 DEFAULT_TIERS = [("core_essential", "Core Essential"), ("core_standard", "Core Standard"),
                  ("enhancement", "Enhancement"), ("advanced_enhancement", "Advanced Enhancement")]
@@ -536,6 +541,7 @@ SLICE_LABELS = {"4@0-2.5": "Item 4 · at least 1 committee member role",
                 "4@2.5-5": "Item 4 · 8 or more committee member roles"}
 _TOKEN_RE = re.compile(r"^(\d+)(?:(C)|@([\d.]+)-([\d.]+)|:([A-R]+))?$")
 _ACT_LINE = re.compile(r"^\s*[-*]\s*\*\*([A-R])\.\*\*")
+BLANK = "blank" 
 
 def _pts(x):
     return f"{round(x, 1):g}"
@@ -1631,8 +1637,10 @@ def _process_pdf(file_info, lang_choice):
         radio_choices = {
             "yes": next((c for c in ["Sí", "Si", "Yes", "Oui", "Sim"]
                          if re.fullmatch(cfg["yes"], c, re.IGNORECASE)), "Yes"),
-            "partial": cfg["partial"], "no": cfg["no"]}
-
+            "partial": cfg["partial"],
+            "no": cfg["no"],
+            BLANK: f"— {cfg.get('ui_blank', 'Not answered')}",
+        }
         domains, nq = [], 0
         for dnum, items in DOMAIN_ITEMS.items():
             qs = []
@@ -1650,10 +1658,11 @@ def _process_pdf(file_info, lang_choice):
                 nq += 1
             domains.append({"name": DOMAIN_TITLES[dnum], "questions": qs})
         parsed_domains.set(domains)
+        n_blank = sum(1 for n in RADIO_FIELDS if defaults.get(n) is None)
 
         pdf_meta.set({"name": file_info["name"], "size": file_info["size"],
                       "pages": len(reader.pages), "lang": cfg["name"], "recognized": True,
-                      "n_fields": len(field_dump.get()), "n_questions": nq})
+                      "n_fields": len(field_dump.get()), "n_questions": nq, "n_blank": n_blank})
     except Exception as e:
         import traceback
         pdf_meta.set({"error": f"{e}\n{traceback.format_exc()}"})
@@ -1836,8 +1845,8 @@ async def _do_export():
 
 # ---------- Calcs ----------
 @reactive.calc
-def all_scores():
-    special = pdf_special.get()
+def form_values():
+    """Current answer for every editable item (falls back to the PDF value)."""
     defs = geo_defaults.get()
     values = {}
     for num in CANONICAL:
@@ -1848,7 +1857,11 @@ def all_scores():
         except Exception:
             val = None
         values[num] = defs.get(num) if val is None else val
-    per = score_values(values, special)
+    return values
+
+@reactive.calc
+def all_scores():
+    per = score_values(form_values(), pdf_special.get())
     domains, te, tp = aggregate_scores(per)
     return per, domains, te, tp
 
@@ -1901,16 +1914,20 @@ async def _push_badges():
     _ = parsed_domains.get()
     _ = reset_counter.get()
     per, _d, _e, _t = all_scores()
+    vals = form_values()
     session = get_current_session()
     if session is None:
         return
     items = {}
     for num in CANONICAL:
-        if num in (6, 35):
-            continue
         e, p = per.get(num, (None, None))
-        items[f"badge_q_{num}"] = {"html": "—" if e is None else f"{e:g} / {p:g}",
-                                   "bg": score_color(e, p)}
+        blank = CANONICAL[num]["type"] == "ypn" and vals.get(num) in (None, BLANK)
+        if e is None:
+            html = "—"
+        else:
+            html = f"{e:g} / {p:g}" + (" · blank" if blank else "")
+        items[f"badge_q_{num}"] = {"html": html,
+                                   "bg": "#757575" if blank else score_color(e, p)}
     await session.send_custom_message("update_badges", {"items": items})
 
 # =====================================================================
@@ -1957,6 +1974,7 @@ with ui.navset_card_tab(id="main_tabs"):
             def pdf_status():
                 meta = pdf_meta.get()
                 cfg = LANGS[current_lang.get()]
+                n_blank = meta.get("n_blank", 0)
                 if meta is None:
                     return core_ui.p(cfg["ui_no_pdf"], class_="text-muted")
                 if "error" in meta:
@@ -1971,11 +1989,14 @@ with ui.navset_card_tab(id="main_tabs"):
                                   style="color:#c62828; font-weight:600;"))
                 return core_ui.TagList(
                     core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
-                              core_ui.strong("Pages: "), str(meta["pages"]), " | ",
-                              core_ui.strong("Size: "), f"{meta['size']:,} bytes"),
+                            core_ui.strong("Pages: "), str(meta["pages"]), " | ",
+                            core_ui.strong("Size: "), f"{meta['size']:,} bytes"),
                     core_ui.p(cfg["ui_parsed"].format(nq=meta.get("n_questions", 0), lang=meta["lang"])),
-                    core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."))
-
+                    core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."),
+                    core_ui.p(f"⚠️ {n_blank} Yes/Partial/No item(s) were blank in the PDF. They are marked "
+                            f"“Not answered” (gray badge) and score 0.",
+                            style="color:#ef6c00;font-weight:600;") if n_blank else None,
+                )
         core_ui.div(id="dynamic_form_container")
 
         with ui.card():
@@ -2509,8 +2530,9 @@ def _render_dynamic_form():
                 f'padding:2px 8px;border-radius:10px;background:#9e9e9e;color:white;font-size:0.80em;'
                 f'font-weight:600;vertical-align:middle;">—</span>')
             if q["type"] == "radio":
+                default = q["default"] if q["default"] in ("yes", "partial", "no") else BLANK
                 items.append(core_ui.input_radio_buttons(
-                    q["id"], label_html, choices=q["options"], selected=q["default"], inline=True))
+                    q["id"], label_html, choices=q["options"], selected=default, inline=True))
             else:
                 default = q["default"] if isinstance(q["default"], list) else []
                 items.append(core_ui.input_checkbox_group(
