@@ -482,6 +482,57 @@ SIX_A_LABELS = ["Not applicable (no antibiotic stewardship team)",
                 "Clinical microbiologist(s)", "Information technology specialist(s)",
                 "Administrative support", "Other(s)"]
 
+THIRTYFIVE_LETTERS = "ABCDEFGHIJKLMNOPQR"
+THIRTYFIVE_LABELS = [
+    "Antibiotic automatic stops (e.g., 24 hours for surgical prophylaxis)",
+    "Antibiotic “time outs” (e.g., review of empiric IV therapy at 48 hours)",
+    "Antibiotic reminders: alerts at the time of prescribing tied to a particular antibiotic",
+    "Intravenous to oral antibiotic formulation conversion",
+    "Prospective audit and feedback of specified antibiotics",
+    "Prior authorization of specified antibiotics",
+    "Restricted use of antibiotics based on formulary approval for prespecified conditions or populations",
+    "Peer comparisons on antibiotic prescribing",
+    "In-person antibiotic stewardship clinical rounds",
+    "Assessment and clarification of documented antibiotic allergies",
+    "Review of outpatient parenteral antibiotic therapy prior to discharge",
+    "Alerts to prescribers about potentially duplicative antibiotic coverage",
+    "Alerts to prescribers about drug-drug interactions",
+    "Dose optimization based on pharmacokinetic and pharmacodynamic parameters",
+    "Management of antibiotic shortages/stockouts",
+    "Pharmacist- or clinical pharmacologist-assisted dosing in renal or liver dysfunction",
+    "Therapeutic drug monitoring of antibiotics with narrow therapeutic index",
+    "Awareness campaigns on responsible use of antibiotics",
+]
+
+# Checkbox values are stable codes; labels are display-only
+SIX_A_CHOICES = {str(i): lab for i, lab in enumerate(SIX_A_LABELS)}
+THIRTYFIVE_CHOICES = {l: f"{l}. {lab}" for l, lab in zip(THIRTYFIVE_LETTERS, THIRTYFIVE_LABELS)}
+
+TABLE_ITEM_TEXT = {
+    6: "6A. Who are the members of the antibiotic stewardship team at your healthcare "
+       "facility (select all that apply)?",
+    35: "35A. Which of the following antibiotic stewardship activities are routinely conducted "
+        "at your healthcare facility (select all that apply)?",
+}
+TABLE_ITEM_HINT = {
+    6: "Full credit requires an infectious diseases trained physician/clinician, a pharmacist "
+       "(ID-trained, clinical, or staff), and a clinical microbiologist. Team details 6B–6E are not scored.",
+    35: "Full credit at 9 or more activities; partial credit for 1–8. "
+        "Facility-wide implementation (35B) is not scored.",
+}
+
+def _as_6a_indices(val):
+    out = []
+    for x in (val or []):
+        try:
+            out.append(int(x))
+        except (TypeError, ValueError):
+            pass
+    return out
+
+def _as_35a_letters(val):
+    return [x for x in (val or []) if x in THIRTYFIVE_LETTERS]
+
 # ---- Scoring rules (index-based) ----
 SCORING = {
     4:  {"rule": "count_range", "full": 8, "partial": 1},
@@ -1138,9 +1189,18 @@ def read_by_schema(reader):
         labels = CHECKBOX_LABELS[n]
         options[n] = labels
         defaults[n] = [labels[i] for i, fn in enumerate(flds) if _cb_on(fv(fn))]
-    special[6] = [i for i, fn in enumerate(SIX_A_FIELDS) if _cb_on(fv(fn))]
-    special["35A"] = [_is_35a_yes(fv(fn)) for fn in THIRTYFIVE_A_FIELDS]   # A..R in order
-    special[35] = sum(special["35A"])
+
+    six_a = [i for i, fn in enumerate(SIX_A_FIELDS) if _cb_on(fv(fn))]
+    flags35 = [_is_35a_yes(fv(fn)) for fn in THIRTYFIVE_A_FIELDS]   # A..R in order
+
+    # Form defaults (editable questions)
+    defaults[6] = six_a
+    defaults[35] = [l for l, on in zip(THIRTYFIVE_LETTERS, flags35) if on]
+
+    # PDF-original values (kept for reference / items not in the form, e.g. 6C)
+    special[6] = six_a
+    special["35A"] = flags35
+    special[35] = sum(flags35)
     special["6C"] = _read_6c(fields)
     return options, defaults, special
 
@@ -1198,13 +1258,16 @@ def score_item(num, val):
     return (_score_checkbox(num, val or []), MAX_PER_ITEM)
 
 def score_values(values, special):
-    """Score every canonical item from a {num: value} dict + special (6A/35A) data."""
+    """Score every canonical item. 6 and 35 come from the form when present,
+    otherwise from the PDF-derived special data."""
     per = {}
     for num in CANONICAL:
         if num == 6:
-            val = special.get(6, [])
+            raw = values.get(6)
+            val = _as_6a_indices(raw) if raw is not None else special.get(6, [])
         elif num == 35:
-            val = special.get(35, 0)
+            raw = values.get(35)
+            val = len(_as_35a_letters(raw)) if raw is not None else special.get(35, 0)
         else:
             val = values.get(num)
         per[num] = score_item(num, val)
@@ -1645,11 +1708,19 @@ def _process_pdf(file_info, lang_choice):
         for dnum, items in DOMAIN_ITEMS.items():
             qs = []
             for num in items:
-                if num in (6, 35):
-                    continue
                 meta = CANONICAL[num]
                 stem = stems.get(num, f"{num}.")
-                if meta["type"] == "ypn":
+                if num == 6:
+                    qs.append({"id": "q_6", "number": 6, "type": "checkbox",
+                               "text": TABLE_ITEM_TEXT[6], "hint": TABLE_ITEM_HINT[6],
+                               "options": SIX_A_CHOICES,
+                               "default": [str(i) for i in defaults.get(6, [])]})
+                elif num == 35:
+                    qs.append({"id": "q_35", "number": 35, "type": "checkbox",
+                               "text": TABLE_ITEM_TEXT[35], "hint": TABLE_ITEM_HINT[35],
+                               "options": THIRTYFIVE_CHOICES,
+                               "default": list(defaults.get(35, []))})
+                elif meta["type"] == "ypn":
                     qs.append({"id": f"q_{num}", "number": num, "text": stem, "type": "radio",
                                "options": radio_choices, "default": defaults.get(num)})
                 else:
@@ -1850,14 +1921,32 @@ def form_values():
     defs = geo_defaults.get()
     values = {}
     for num in CANONICAL:
-        if num in (6, 35):
-            continue
         try:
             val = input[f"q_{num}"]()
         except Exception:
             val = None
-        values[num] = defs.get(num) if val is None else val
+        if val is None:
+            val = defs.get(num)
+        if num in (6, 35):
+            if val is None:
+                continue                      # no PDF / not rendered yet
+            val = _as_6a_indices(val) if num == 6 else _as_35a_letters(val)
+        values[num] = val
     return values
+
+@reactive.calc
+def live_special():
+    """PDF special data with 6A / 35A overridden by the current form selections."""
+    sp = dict(pdf_special.get() or {})
+    vals = form_values()
+    if 6 in vals:
+        sp[6] = list(vals[6])
+    if 35 in vals:
+        chosen = set(vals[35])
+        sp["35A"] = [l in chosen for l in THIRTYFIVE_LETTERS]
+        sp[35] = len(chosen)
+    return sp
+
 
 @reactive.calc
 def all_scores():
@@ -1872,7 +1961,7 @@ def action_plan_ctx():
 @reactive.calc
 def action_plan_eval():
     per, _domains, _te, _tp = all_scores()
-    return evaluate_tiers(per, pdf_special.get(), action_plan_ctx(), ACTION_PLAN_TEMPLATE)
+    return evaluate_tiers(per, live_special(), action_plan_ctx(), ACTION_PLAN_TEMPLATE)
 
 @reactive.calc
 def action_plan_md():
@@ -1974,7 +2063,7 @@ with ui.navset_card_tab(id="main_tabs"):
             def pdf_status():
                 meta = pdf_meta.get()
                 cfg = LANGS[current_lang.get()]
-                n_blank = meta.get("n_blank", 0)
+                
                 if meta is None:
                     return core_ui.p(cfg["ui_no_pdf"], class_="text-muted")
                 if "error" in meta:
@@ -1987,6 +2076,7 @@ with ui.navset_card_tab(id="main_tabs"):
                                   f"(found {meta.get('n_fields', 0)} fields, but not the expected names). "
                                   "Scoring is unavailable. See the Diagnostics tab.",
                                   style="color:#c62828; font-weight:600;"))
+                n_blank = meta.get("n_blank", 0)
                 return core_ui.TagList(
                     core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
                             core_ui.strong("Pages: "), str(meta["pages"]), " | ",
