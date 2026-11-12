@@ -70,6 +70,99 @@ core_ui.tags.style("""
 #dynamic_form_container .control-label { display: block; }
 """)
 
+# ---------- Chart Helpers -------------------
+
+core_ui.tags.style("""
+svg.ts-chart .ts-series, svg.ts-chart .ts-legend-item { transition: opacity 0.15s ease; }
+svg.ts-chart .ts-series, svg.ts-chart .ts-legend-item, svg.ts-chart .ts-legend-reset { cursor: pointer; }
+svg.ts-chart .ts-legend-item:focus, svg.ts-chart .ts-legend-reset:focus { outline: none; }
+svg.ts-chart .ts-legend-item:focus rect { stroke: #90caf9; }
+
+/* Selected (click) */
+svg.ts-chart.ts-has-active .ts-series:not(.ts-active),
+svg.ts-chart.ts-has-active .ts-legend-item:not(.ts-active) { opacity: 0.15; }
+svg.ts-chart .ts-series.ts-active .ts-line { stroke-width: 4.5px; stroke-opacity: 1; }
+svg.ts-chart .ts-series.ts-active circle { stroke-width: 2.5px; }
+svg.ts-chart .ts-legend-item.ts-active text { font-weight: 700; }
+
+/* Hover preview (only when nothing is selected) */
+svg.ts-chart.ts-has-hover:not(.ts-has-active) .ts-series:not(.ts-hover),
+svg.ts-chart.ts-has-hover:not(.ts-has-active) .ts-legend-item:not(.ts-hover) { opacity: 0.25; }
+svg.ts-chart .ts-series.ts-hover .ts-line { stroke-width: 4px; }
+""")
+
+core_ui.tags.script("""
+(function () {
+    window._tsActive = window._tsActive || [];
+
+    function applyChart(svg) {
+        const active = new Set(window._tsActive);
+        svg.classList.toggle('ts-has-active', active.size > 0);
+        svg.querySelectorAll('[data-series]').forEach(el => {
+            const on = active.has(el.getAttribute('data-series'));
+            el.classList.toggle('ts-active', on);
+            // bring highlighted series to the front (SVG paints in DOM order)
+            if (on && el.classList.contains('ts-series')) el.parentNode.appendChild(el);
+        });
+    }
+    function applyAll() { document.querySelectorAll('svg.ts-chart').forEach(applyChart); }
+
+    function toggle(key, additive) {
+        const set = new Set(window._tsActive);
+        if (additive) {
+            set.has(key) ? set.delete(key) : set.add(key);
+        } else if (set.size === 1 && set.has(key)) {
+            set.clear();                       // clicking the only selection clears it
+        } else {
+            set.clear(); set.add(key);
+        }
+        window._tsActive = Array.from(set);
+        applyAll();
+    }
+
+    document.addEventListener('click', function (e) {
+        const svg = e.target.closest && e.target.closest('svg.ts-chart');
+        if (!svg) return;
+        if (e.target.closest('.ts-legend-reset')) { window._tsActive = []; applyAll(); return; }
+        const item = e.target.closest('[data-series]');
+        if (item) toggle(item.getAttribute('data-series'), e.shiftKey || e.ctrlKey || e.metaKey);
+    });
+
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && window._tsActive.length) { window._tsActive = []; applyAll(); return; }
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const el = e.target.closest && e.target.closest('svg.ts-chart [data-series], svg.ts-chart .ts-legend-reset');
+        if (!el) return;
+        e.preventDefault();
+        if (el.classList.contains('ts-legend-reset')) { window._tsActive = []; applyAll(); }
+        else toggle(el.getAttribute('data-series'), e.shiftKey);
+    });
+
+    // Hover preview
+    document.addEventListener('mouseover', function (e) {
+        const item = e.target.closest && e.target.closest('svg.ts-chart [data-series]');
+        if (!item) return;
+        const svg = item.closest('svg.ts-chart');
+        const key = item.getAttribute('data-series');
+        svg.classList.add('ts-has-hover');
+        svg.querySelectorAll('[data-series]').forEach(el =>
+            el.classList.toggle('ts-hover', el.getAttribute('data-series') === key));
+    });
+    document.addEventListener('mouseout', function (e) {
+        const item = e.target.closest && e.target.closest('svg.ts-chart [data-series]');
+        if (!item || (e.relatedTarget && item.contains(e.relatedTarget))) return;
+        const svg = item.closest('svg.ts-chart');
+        svg.classList.remove('ts-has-hover');
+        svg.querySelectorAll('.ts-hover').forEach(el => el.classList.remove('ts-hover'));
+    });
+
+    // Re-apply the selection whenever Shiny re-renders the chart
+    $(document).on('shiny:value', function (e) {
+        if (e.name === 'ts_chart') setTimeout(applyAll, 30);
+    });
+})();
+""")
+
 # ---------- Combined-PDF export (print engine) ----------
 core_ui.tags.style("""
 #gaset-print-root { display: none; }
@@ -1501,9 +1594,9 @@ def band_text_color(pct):
 
 
 def svg_trend_chart(pts, show_domains=True, width=900, height=420):
-    """Dependency-free SVG line chart of domain/overall % over time."""
+    """Dependency-free SVG line chart of domain/overall % over time (click-to-highlight)."""
     esc = _html.escape
-    L, R, T, B = 55, 175, 20, 80
+    L, R, T, B = 55, 185, 20, 80
     pw, ph = width - L - R, height - T - B
     dates = [p["date"] for p in pts]
     d0, d1 = min(dates), max(dates)
@@ -1515,15 +1608,15 @@ def svg_trend_chart(pts, show_domains=True, width=900, height=420):
     def Y(v):
         return T + ph * (1 - max(0.0, min(100.0, v)) / 100)
 
-    s = [f'<svg viewBox="0 0 {width} {height}" width="100%" xmlns="http://www.w3.org/2000/svg" '
+    s = [f'<svg class="ts-chart" viewBox="0 0 {width} {height}" width="100%" '
+         f'xmlns="http://www.w3.org/2000/svg" '
          f'style="max-width:{width}px;font-family:system-ui,-apple-system,Segoe UI,sans-serif;'
          f'font-size:12px;" role="img" aria-label="G-ASET score trends over time">']
 
-    # Traffic-light bands
+    # Traffic-light bands, gridlines, thresholds, axes
     for lo, hi, col in ((0, 50, "#c62828"), (50, 80, "#f9a825"), (80, 100, "#2e7d32")):
         s.append(f'<rect x="{L}" y="{Y(hi):.1f}" width="{pw}" height="{Y(lo) - Y(hi):.1f}" '
                  f'fill="{col}" fill-opacity="0.08"/>')
-    # Gridlines + y labels
     for v in range(0, 101, 20):
         y = Y(v)
         s.append(f'<line x1="{L}" y1="{y:.1f}" x2="{L + pw}" y2="{y:.1f}" stroke="#e0e0e0"/>')
@@ -1531,13 +1624,12 @@ def svg_trend_chart(pts, show_domains=True, width=900, height=420):
     for v in (50, 80):
         s.append(f'<line x1="{L}" y1="{Y(v):.1f}" x2="{L + pw}" y2="{Y(v):.1f}" '
                  f'stroke="#888" stroke-dasharray="4 3"/>')
-    # Axes
     s.append(f'<line x1="{L}" y1="{T}" x2="{L}" y2="{T + ph}" stroke="#555"/>')
     s.append(f'<line x1="{L}" y1="{T + ph}" x2="{L + pw}" y2="{T + ph}" stroke="#555"/>')
     s.append(f'<text x="14" y="{T + ph / 2:.1f}" text-anchor="middle" fill="#333" '
              f'transform="rotate(-90 14 {T + ph / 2:.1f})">Score (%)</text>')
 
-    # X ticks (one per distinct assessment date)
+    # X ticks
     uniq = sorted(set(dates))
     rotate = len(uniq) > 5
     for d in uniq:
@@ -1553,7 +1645,7 @@ def svg_trend_chart(pts, show_domains=True, width=900, height=420):
     s.append(f'<text x="{L + pw / 2:.1f}" y="{height - 8}" text-anchor="middle" fill="#333">'
              f'Assessment date</text>')
 
-    # Series
+    # Series (each wrapped in a clickable group)
     keys = (list(DOMAIN_ITEMS) if show_domains else []) + ["overall"]
     for k in keys:
         is_o = k == "overall"
@@ -1561,26 +1653,39 @@ def svg_trend_chart(pts, show_domains=True, width=900, height=420):
         name = "Overall" if is_o else DOMAIN_SHORT[k]
         xy = [(X(p["date"]), Y(p["overall"] if is_o else p["dpct"][k]),
                p["overall"] if is_o else p["dpct"][k], p) for p in pts]
+        s.append(f'<g class="ts-series" data-series="{k}">')
         if len(xy) > 1:
             path = " ".join(f"{x:.1f},{y:.1f}" for x, y, _, _ in xy)
-            width_attr = "3.5" if is_o else "2"
-            opacity = "1" if is_o else "0.85"
-            s.append(f'<polyline points="{path}" fill="none" stroke="{col}" '
-                     f'stroke-width="{width_attr}" stroke-opacity="{opacity}"/>')
+            # wide invisible hit area so thin lines are easy to click/hover
+            s.append(f'<polyline class="ts-hit" points="{path}" fill="none" '
+                     f'stroke="transparent" stroke-width="14"/>')
+            s.append(f'<polyline class="ts-line" points="{path}" fill="none" stroke="{col}" '
+                     f'stroke-width="{3.5 if is_o else 2}" stroke-opacity="{1 if is_o else 0.85}"/>')
         for x, y, v, p in xy:
             tip = esc(f"{name}\n{p['date'].isoformat()} — {p['label']}\n{v:.1f}%")
             s.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="{5 if is_o else 4}" fill="{col}" '
                      f'stroke="white" stroke-width="1.5"><title>{tip}</title></circle>')
+        s.append('</g>')
 
-    # Legend
+    # Clickable legend
     lx, ly = L + pw + 20, T + 10
     for i, k in enumerate(keys):
         name = "Overall" if k == "overall" else DOMAIN_SHORT[k]
         y = ly + i * 22
-        s.append(f'<line x1="{lx}" y1="{y}" x2="{lx + 22}" y2="{y}" stroke="{SERIES_COLORS[k]}" '
-                 f'stroke-width="{3.5 if k == "overall" else 2}"/>')
-        s.append(f'<circle cx="{lx + 11}" cy="{y}" r="4" fill="{SERIES_COLORS[k]}"/>')
-        s.append(f'<text x="{lx + 30}" y="{y + 4}" fill="#222">{esc(name)}</text>')
+        s.append(f'<g class="ts-legend-item" data-series="{k}" role="button" tabindex="0" '
+                 f'aria-label="Highlight {esc(name)}">'
+                 f'<rect x="{lx - 4}" y="{y - 10}" width="{R - 24}" height="20" rx="4" '
+                 f'fill="transparent"/>'
+                 f'<line x1="{lx}" y1="{y}" x2="{lx + 22}" y2="{y}" stroke="{SERIES_COLORS[k]}" '
+                 f'stroke-width="{3.5 if k == "overall" else 2}"/>'
+                 f'<circle cx="{lx + 11}" cy="{y}" r="4" fill="{SERIES_COLORS[k]}"/>'
+                 f'<text x="{lx + 30}" y="{y + 4}" fill="#222">{esc(name)}</text></g>')
+    ry = ly + len(keys) * 22 + 6
+    s.append(f'<g class="ts-legend-reset" role="button" tabindex="0" aria-label="Show all series">'
+             f'<rect x="{lx - 4}" y="{ry - 10}" width="{R - 24}" height="20" rx="4" fill="transparent"/>'
+             f'<text x="{lx}" y="{ry + 4}" fill="#1565c0" text-decoration="underline">↺ Show all</text></g>')
+    s.append(f'<text x="{lx}" y="{ry + 26}" fill="#888" font-size="10.5">Click to highlight;</text>')
+    s.append(f'<text x="{lx}" y="{ry + 40}" fill="#888" font-size="10.5">Shift/Ctrl-click to compare</text>')
     s.append("</svg>")
     return "".join(s)
 
