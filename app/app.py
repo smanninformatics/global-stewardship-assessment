@@ -58,6 +58,18 @@ Shiny.addCustomMessageHandler('set_form_lock', function(msg) {
 });
 """)
 
+core_ui.tags.style("""
+#q_6 .shiny-options-group, #q_35 .shiny-options-group { columns: 2; column-gap: 2rem; }
+@media (max-width: 768px) {
+    #q_6 .shiny-options-group, #q_35 .shiny-options-group { columns: 1; }
+}
+""")
+
+core_ui.tags.style("""
+#dynamic_form_container .shiny-input-container { width: 100% !important; max-width: 100%; }
+#dynamic_form_container .control-label { display: block; }
+""")
+
 # ---------- Combined-PDF export (print engine) ----------
 core_ui.tags.style("""
 #gaset-print-root { display: none; }
@@ -2626,6 +2638,6 @@ def _render_dynamic_form():
             else:
                 default = q["default"] if isinstance(q["default"], list) else []
                 items.append(core_ui.input_checkbox_group(
-                    q["id"], label_html, choices=q["options"], selected=default))
+                    q["id"], label_html, choices=q["options"], selected=default, width="100%"))
         ui.insert_ui(core_ui.card(core_ui.card_header(d["name"]), *items),
                      selector="#dynamic_form_container", where="beforeEnd")
