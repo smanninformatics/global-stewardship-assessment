@@ -1302,12 +1302,25 @@ def score_color(earned, possible):
     return "#2e7d32" if ratio >= 0.99 else ("#ef6c00" if ratio >= 0.49 else "#c62828")
 
 # ---------- Question stems (localized display text) ----------
+KEEP_SELECT_ALL = True   # True: "...access (select all that apply)?"  False: "...access?"
+
+def _ws_tolerant(pattern):
+    """Allow any whitespace (incl. line breaks) wherever the pattern has a space."""
+    return pattern.replace(" ", r"\s+")
+
 def parse_stems_all(text, cfg):
     if "footer_re" in cfg:
         text = re.sub(cfg["footer_re"], "\n", text, flags=re.DOTALL | re.IGNORECASE)
     text = re.sub(r"[ \t]+", " ", text)
+
     item_re = re.compile(r"(?:^|\n)\s*(\d{1,3})\.\s+(.+?)(?=(?:\n\s*\d{1,3}\.\s)|\Z)", re.DOTALL)
-    yes, partial = cfg["yes"], re.escape(cfg["partial"])
+    sel = _ws_tolerant(cfg["select_all"])
+    ans = _ws_tolerant(cfg["answer_questions"])
+    yes, partial = cfg["yes"], _ws_tolerant(re.escape(cfg["partial"]).replace(r"\ ", " "))
+
+    # Whole parenthetical, e.g. "(select all that apply)?" or "select all that apply:"
+    sel_block = re.compile(rf"\(?\s*(?:{sel})\s*\)?\s*[?:]?", re.IGNORECASE)
+
     out = {}
     for m in item_re.finditer(text):
         num = int(m.group(1))
@@ -1316,14 +1329,27 @@ def parse_stems_all(text, cfg):
         raw = m.group(2).strip()
         if len(raw) < 8:
             continue
-        cuts = [re.search(cfg["select_all"], raw, re.IGNORECASE),
-                re.search(cfg["answer_questions"], raw, re.IGNORECASE),
-                re.search(rf"{yes}\s+{partial}", raw, re.IGNORECASE),
-                re.search(rf"\n\s*{yes}\b", raw, re.IGNORECASE)]
-        pos = [c.start() for c in cuts if c]
-        cut = min(pos) if pos else len(raw)
+
+        # Candidate cut points (earliest wins)
+        cuts = []
+        m_sel = sel_block.search(raw)
+        if m_sel:
+            cuts.append(("sel", m_sel.end() if KEEP_SELECT_ALL else m_sel.start()))
+        for pat in (ans, rf"{yes}\s+{partial}", rf"\n\s*{yes}\b"):
+            mm = re.search(pat, raw, re.IGNORECASE)
+            if mm:
+                cuts.append(("other", mm.start()))
+        kind, cut = min(cuts, key=lambda c: c[1]) if cuts else ("none", len(raw))
+
         stem = re.sub(r"\s+", " ", raw[:cut]).strip()
-        stem = re.sub(rf"\s*\(\s*{cfg['select_all']}\s*\)\s*\??\s*$", "?", stem, flags=re.IGNORECASE)
+        if kind == "sel" and not KEEP_SELECT_ALL:
+            stem = stem.rstrip(" (:") + "?"
+
+        # Safety net: drop an unclosed trailing "(…" fragment, tidy punctuation
+        stem = re.sub(r"\s*\([^)]*$", "", stem).rstrip(" :")
+        if stem and stem[-1] not in "?.:)":
+            stem += "?"
+
         if len(stem) >= 5:
             out[num] = f"{num}. {stem}"
     return out
