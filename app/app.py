@@ -1463,7 +1463,7 @@ def dump_fields(reader):
 # ---------- Time-series helpers (Trends tab) ----------
 # =====================================================================
 TREND_STABLE_PP = 2.0     # |slope| below this (pp/year) is reported as "stable"
-TARGET_PCT = 80.0         # "green" threshold used for projections
+#TARGET_PCT = 80.0         # "green" threshold used for projections
 SERIES_COLORS = {1: "#0072B2", 2: "#E69F00", 3: "#009E73", 4: "#CC79A7",
                  5: "#56B4E9", "overall": "#000000"}   # Okabe-Ito (color-blind safe)
 
@@ -1540,17 +1540,34 @@ def trend_direction(slope):
         return "▼ Declining"
     return "► Stable"
 
-def project_target_date(last_date, last_pct, slope, target=TARGET_PCT):
-    if last_pct > target:
-        return "Reached"
-    if slope is None:
-        return "—"
-    if slope <= 0:
-        return "Not on track"
-    years = (target - last_pct) / slope
-    if years > 10:
-        return "> 10 years"
-    return (last_date + timedelta(days=round(years * 365.25))).isoformat()
+#def project_target_date(last_date, last_pct, slope, target=TARGET_PCT):
+#    if last_pct > target:
+#        return "Reached"
+#    if slope is None:
+#        return "—"
+#    if slope <= 0:
+#        return "Not on track"
+#    years = (target - last_pct) / slope
+#    if years > 10:
+#        return "> 10 years"
+#    return (last_date + timedelta(days=round(years * 365.25))).isoformat()
+
+#def trend_summary(pts):
+#    dates = [p["date"] for p in pts]
+#    rows = []
+#    for k in list(DOMAIN_ITEMS) + ["overall"]:
+#        ys = [p["overall"] if k == "overall" else p["dpct"][k] for p in pts]
+#        slope = slope_per_year(dates, ys)
+#        rows.append({
+#            "key": k,
+#            "name": "OVERALL" if k == "overall" else DOMAIN_TITLES[k],
+#            "baseline": ys[0], "latest": ys[-1],
+#            "d_base": ys[-1] - ys[0],
+#            "d_prev": (ys[-1] - ys[-2]) if len(ys) > 1 else None,
+#            "slope": slope, "direction": trend_direction(slope),
+#            "projection": project_target_date(dates[-1], ys[-1], slope),
+#        })
+#   return rows
 
 def trend_summary(pts):
     dates = [p["date"] for p in pts]
@@ -1565,7 +1582,6 @@ def trend_summary(pts):
             "d_base": ys[-1] - ys[0],
             "d_prev": (ys[-1] - ys[-2]) if len(ys) > 1 else None,
             "slope": slope, "direction": trend_direction(slope),
-            "projection": project_target_date(dates[-1], ys[-1], slope),
         })
     return rows
 
@@ -2559,8 +2575,7 @@ with ui.navset_card_tab(id="main_tabs"):
                     f"(**{o['d_base']:+.1f} pp**) across **{len(pts)}** assessments "
                     f"spanning **{months:.1f} months**.",
                     f"- **Trend:** {o['direction']}"
-                    + (f" ({o['slope']:+.1f} pp/year)" if o["slope"] is not None else "")
-                    + f" · projected to reach {TARGET_PCT:.0f}%: **{o['projection']}**.",
+                    + (f" ({o['slope']:+.1f} pp/year)" if o["slope"] is not None else "") + ".",
                     f"- **Largest gain:** {DOMAIN_SHORT[best['key']]} ({best['d_base']:+.1f} pp).",
                 ]
                 if worst["d_base"] < 0:
@@ -2571,7 +2586,7 @@ with ui.navset_card_tab(id="main_tabs"):
                 lines.append(f"- **Since previous assessment:** {len(up)} items improved, "
                              f"{len(down)} regressed.")
                 lines.append("\n*pp = percentage points. Slopes are descriptive (least-squares across "
-                             "all assessments) and are not statistical forecasts; interpret with "
+                             "all assessments); interpret with "
                              "caution when there are few assessments.*")
                 return core_ui.markdown("\n".join(lines))
 
@@ -2633,7 +2648,6 @@ with ui.navset_card_tab(id="main_tabs"):
                         core_ui.tags.td("—" if r["slope"] is None else f"{r['slope']:+.1f}",
                                         style="text-align:center;"),
                         core_ui.tags.td(r["direction"], style="text-align:center;"),
-                        core_ui.tags.td(r["projection"], style="text-align:center;"),
                         style="background:#e8f4f8;" if is_o else None))
                 return core_ui.tags.table(
                     core_ui.tags.thead(core_ui.tags.tr(
@@ -2643,8 +2657,7 @@ with ui.navset_card_tab(id="main_tabs"):
                         core_ui.tags.th("Δ since baseline", style="text-align:center;"),
                         core_ui.tags.th("Δ since previous", style="text-align:center;"),
                         core_ui.tags.th("Slope (pp/yr)", style="text-align:center;"),
-                        core_ui.tags.th("Direction", style="text-align:center;"),
-                        core_ui.tags.th(f"Projected {TARGET_PCT:.0f}%", style="text-align:center;"))),
+                        core_ui.tags.th("Direction", style="text-align:center;"))),
                     core_ui.tags.tbody(*rows),
                     class_="table table-bordered table-sm")
 
