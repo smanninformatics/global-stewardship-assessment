@@ -30,6 +30,8 @@ except ImportError:
 
 ui.page_opts(title="G-ASET Multilingual PDF Assessment", fillable=False)
 
+SHOW_DIAGNOSTICS = False   # set True to show the 🔧 Diagnostics tab (AcroForm field map)
+
 # ---------- JS helpers ----------
 core_ui.tags.script("""
 Shiny.addCustomMessageHandler('update_badges', function(msg) {
@@ -2005,8 +2007,9 @@ def _on_ts_clear():
 
 
 EXPORT_TABS = [("assessment", "📝 Assessment"), ("scores", "📊 Scores"),
-               ("action_plan", "🧭 Action Plan"), ("trends", "📈 Trends"),
-               ("diagnostics", "🔧 Diagnostics")]
+               ("action_plan", "🧭 Action Plan"), ("trends", "📈 Trends")]
+if SHOW_DIAGNOSTICS:
+    EXPORT_TABS.append(("diagnostics", "🔧 Diagnostics"))
 export_prefs = reactive.value({"tabs": ["assessment", "scores", "action_plan", "trends"],
                                "cover": True, "expand": False, "orientation": "portrait"})
 
@@ -2238,13 +2241,14 @@ with ui.navset_card_tab(id="main_tabs"):
                 if "error" in meta:
                     return core_ui.tags.pre(meta["error"], style="color:red; white-space:pre-wrap;")
                 if not meta.get("recognized"):
+                    hint = " See the Diagnostics tab." if SHOW_DIAGNOSTICS else ""
                     return core_ui.TagList(
                         core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
-                                  core_ui.strong("Pages: "), str(meta["pages"])),
+                            core_ui.strong("Pages: "), str(meta["pages"])),
                         core_ui.p("⚠️ This PDF was not recognized as the standard G-ASET fillable form "
-                                  f"(found {meta.get('n_fields', 0)} fields, but not the expected names). "
-                                  "Scoring is unavailable. See the Diagnostics tab.",
-                                  style="color:#c62828; font-weight:600;"))
+                            f"(found {meta.get('n_fields', 0)} fields, but not the expected names). "
+                            f"Scoring is unavailable.{hint}",
+                            style="color:#c62828; font-weight:600;"))
                 n_blank = meta.get("n_blank", 0)
                 return core_ui.TagList(
                     core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
@@ -2735,35 +2739,36 @@ with ui.navset_card_tab(id="main_tabs"):
                 yield buf.getvalue()
 
     # ---------------- Tab 5: Diagnostics ----------------
-    with ui.nav_panel("🔧 Diagnostics", value = "diagnostics"):
-        with ui.card():
-            ui.card_header("🔧 AcroForm field map (diagnostic)")
+    if SHOW_DIAGNOSTICS:
+        with ui.nav_panel("🔧 Diagnostics", value = "diagnostics"):
+            with ui.card():
+                ui.card_header("🔧 AcroForm field map (diagnostic)")
 
-            @render.download(label="⬇️ Download field map (CSV)", filename="gaset_field_dump.csv")
-            def download_field_dump():
-                rows = field_dump.get()
-                buf = io.StringIO(); w = csv.writer(buf)
-                w.writerow(["name", "type", "value", "states"])
-                for r in rows:
-                    w.writerow([r["name"], r["type"], r["value"], r["states"]])
-                yield buf.getvalue()
+                @render.download(label="⬇️ Download field map (CSV)", filename="gaset_field_dump.csv")
+                def download_field_dump():
+                    rows = field_dump.get()
+                    buf = io.StringIO(); w = csv.writer(buf)
+                    w.writerow(["name", "type", "value", "states"])
+                    for r in rows:
+                        w.writerow([r["name"], r["type"], r["value"], r["states"]])
+                    yield buf.getvalue()
 
-            @render.ui
-            def field_dump_view():
-                rows = field_dump.get()
-                if not rows:
-                    return core_ui.p("Upload a PDF to list its form fields.", class_="text-muted")
-                body = [core_ui.tags.tr(core_ui.tags.td(r["name"]), core_ui.tags.td(r["type"]),
-                                        core_ui.tags.td(r["value"]), core_ui.tags.td(r["states"]))
-                        for r in rows]
-                return core_ui.tags.details(
-                    core_ui.tags.summary(f"Show {len(rows)} fields"),
-                    core_ui.tags.table(
-                        core_ui.tags.thead(core_ui.tags.tr(
-                            core_ui.tags.th("Field name"), core_ui.tags.th("Type"),
-                            core_ui.tags.th("Value"), core_ui.tags.th("States"))),
-                        core_ui.tags.tbody(*body),
-                        class_="table table-sm table-striped", style="font-size:0.8em;"))
+                @render.ui
+                def field_dump_view():
+                    rows = field_dump.get()
+                    if not rows:
+                        return core_ui.p("Upload a PDF to list its form fields.", class_="text-muted")
+                    body = [core_ui.tags.tr(core_ui.tags.td(r["name"]), core_ui.tags.td(r["type"]),
+                                            core_ui.tags.td(r["value"]), core_ui.tags.td(r["states"]))
+                            for r in rows]
+                    return core_ui.tags.details(
+                        core_ui.tags.summary(f"Show {len(rows)} fields"),
+                        core_ui.tags.table(
+                            core_ui.tags.thead(core_ui.tags.tr(
+                                core_ui.tags.th("Field name"), core_ui.tags.th("Type"),
+                                core_ui.tags.th("Value"), core_ui.tags.th("States"))),
+                            core_ui.tags.tbody(*body),
+                            class_="table table-sm table-striped", style="font-size:0.8em;"))
 
 
 # ---------- Dynamic form (renders into the Assessment tab) ----------
