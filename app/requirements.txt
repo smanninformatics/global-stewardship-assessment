@@ -1,2 +1,3 @@
-shiny
+#shiny
 pypdf
+typing-extensions
