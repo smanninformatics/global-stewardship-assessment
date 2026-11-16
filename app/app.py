@@ -934,7 +934,7 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
            f"- **Overall G-ASET score:** {te:g} / {tp:g} ({overall:.0f}%)",
            f"- **Context:** clinical microbiology laboratory access: **{yn('micro')}** · "
            f"electronic data sources: **{yn('ehr')}**",
-           f"- *Tier progress = questions fully or partially in place ÷ questions in the tier.*", "",
+           f"- *Tier progress = recommendations fully or partially in place ÷ recommendations in the tier.*", "",
            "| Tier | Progress | Recommendations complete | "
            + " | ".join(f"D{d}" for d in DOMAIN_ITEMS) + " |",
            "|---|---|---|" + "---|" * len(DOMAIN_ITEMS)]
@@ -950,7 +950,7 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
     for t in ev["tiers"]:
         partial = f" ({t['n_partial']} partial)" if t["n_partial"] else ""
         out += [f"## {t['label']} — {t['pct']:.0f}% in place", "",
-                f"`{_text_bar(t['pct'])}` {t['n_done']} of {t['n_total']} questions in place{partial}", ""]
+                f"`{_text_bar(t['pct'])}` {t['n_done']} of {t['n_total']} recommendations in place{partial}", ""]
         if not t["gaps"]:
             out += ["_All recommendations in this tier are in place._", ""]
         for r in t["gaps"]:
@@ -1155,7 +1155,7 @@ def _tier_banner(t):
     return core_ui.div(
         core_ui.div(
             core_ui.h4(t["label"], style="margin:0;color:#fff;"),
-            core_ui.span(f"{t['n_done']} of {t['n_total']} questions in place{partial} · "
+            core_ui.span(f"{t['n_done']} of {t['n_total']} recommendations in place{partial} · "
                          f"{len(t['met'])} of {n_recs} recommendations complete",
                          style="color:#fff;opacity:0.9;font-size:0.9em;"),
             style="display:flex;justify-content:space-between;align-items:baseline;"
@@ -1229,7 +1229,7 @@ def _plan_summary(ev, te, tp, ctx):
         for d in DOMAIN_ITEMS:
             done, total = t["by_domain"].get(d, (0, 0))
             cells.append(_pct_cell(done / total * 100,
-                                   title=f"{done} of {total} questions in place or partial")
+                                   title=f"{done} of {total} recomendations in place or partial")
                          if total else core_ui.tags.td("—", style="text-align:center;color:#999;"))
         rows.append(core_ui.tags.tr(*cells))
     return core_ui.div(
