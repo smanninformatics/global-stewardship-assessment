@@ -876,18 +876,26 @@ def evaluate_tiers(per_item, special, ctx, template_text):
     for key, label in meta["tiers"]:
         trs = [r for r in evaluated if r["tier"] == key]
         vis = [r for r in trs if r["outcome"] != "hidden"]
-        e, p = sum(r["earned"] for r in vis), sum(r["possible"] for r in vis)
-        by_dom = {}
-        for r in vis:
-            for c in r["comps"]:
-                d = ITEM_DOMAIN.get(c["item"])
-                if d is not None:
-                    acc = by_dom.setdefault(d, [0.0, 0.0])
-                    acc[0] += c["earned"]; acc[1] += c["possible"]
+        comps = [c for r in vis for c in r["comps"]]
+        n_total = len(comps)
+        n_met = sum(1 for c in comps if c["status"] == "met")
+        n_partial = sum(1 for c in comps if c["status"] == "partial")
+        n_done = n_met + n_partial
+
+        by_dom = {}                                   # domain -> [done, total]
+        for c in comps:
+            d = ITEM_DOMAIN.get(c["item"])
+            if d is not None:
+                acc = by_dom.setdefault(d, [0, 0])
+                acc[1] += 1
+                if c["status"] in ("met", "partial"):
+                    acc[0] += 1
+
         order = lambda r: (r["domain"], r["id"])
         tiers.append({
-            "key": key, "label": label, "earned": e, "possible": p,
-            "pct": e / p * 100 if p else 0.0,
+            "key": key, "label": label,
+            "n_total": n_total, "n_done": n_done, "n_met": n_met, "n_partial": n_partial,
+            "pct": n_done / n_total * 100 if n_total else 0.0,
             "gaps": sorted([r for r in vis if r["outcome"] != "met"], key=order),
             "met": sorted([r for r in vis if r["outcome"] == "met"], key=order),
             "hidden": sorted([r for r in trs if r["outcome"] == "hidden"], key=order),
@@ -923,29 +931,30 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
            "", "## Summary", "",
            f"- **Overall G-ASET score:** {te:g} / {tp:g} ({overall:.0f}%)",
            f"- **Context:** clinical microbiology laboratory access: **{yn('micro')}** · "
-           f"electronic data sources: **{yn('ehr')}**", "",
-           "| Tier | Progress | Points | Recommendations complete | "
+           f"electronic data sources: **{yn('ehr')}**",
+           f"- *Tier progress = questions fully or partially in place ÷ questions in the tier.*", "",
+           "| Tier | Progress | Recommendations complete | "
            + " | ".join(f"D{d}" for d in DOMAIN_ITEMS) + " |",
-           "|---|---|---|---|" + "---|" * len(DOMAIN_ITEMS)]
+           "|---|---|---|" + "---|" * len(DOMAIN_ITEMS)]
     for t in ev["tiers"]:
         doms = []
         for d in DOMAIN_ITEMS:
-            e, p = t["by_domain"].get(d, (0.0, 0.0))
-            doms.append(f"{e / p * 100:.0f}%" if p else "—")
+            done, total = t["by_domain"].get(d, (0, 0))
+            doms.append(f"{done / total * 100:.0f}%" if total else "—")
         out.append(f"| {t['label']} | `{_text_bar(t['pct'], 10)}` {t['pct']:.0f}% | "
-                   f"{_pts(t['earned'])}/{_pts(t['possible'])} | "
                    f"{len(t['met'])}/{len(t['met']) + len(t['gaps'])} | " + " | ".join(doms) + " |")
     out.append("")
 
     for t in ev["tiers"]:
-        out += [f"## {t['label']} — {t['pct']:.0f}% complete", "",
-                f"`{_text_bar(t['pct'])}` {_pts(t['earned'])} / {_pts(t['possible'])} points", ""]
+        partial = f" ({t['n_partial']} partial)" if t["n_partial"] else ""
+        out += [f"## {t['label']} — {t['pct']:.0f}% in place", "",
+                f"`{_text_bar(t['pct'])}` {t['n_done']} of {t['n_total']} questions in place{partial}", ""]
         if not t["gaps"]:
             out += ["_All recommendations in this tier are in place._", ""]
         for r in t["gaps"]:
-            partial = r["outcome"] == "partial"
-            flag = "🟠 PARTIALLY IN PLACE" if partial else "🔴 NOT IN PLACE"
-            title = f"Strengthen: {r['title']}" if partial else r["title"]
+            is_partial = r["outcome"] == "partial"
+            flag = "🟠 PARTIALLY IN PLACE" if is_partial else "🔴 NOT IN PLACE"
+            title = f"Strengthen: {r['title']}" if is_partial else r["title"]
             out += [f"### `[D{r['domain']} · {flag}]` {title}", "",
                     "> **Current status:** " + " · ".join(
                         f"{COMP_STATUS[c['status']]} {c['label']} "
@@ -1139,12 +1148,13 @@ def _progress(pct, dark=False, height=14):
         style="display:flex;align-items:center;gap:8px;")
 
 def _tier_banner(t):
-    n_total = len(t["met"]) + len(t["gaps"])
+    n_recs = len(t["met"]) + len(t["gaps"])
+    partial = f" ({t['n_partial']} partial)" if t["n_partial"] else ""
     return core_ui.div(
         core_ui.div(
             core_ui.h4(t["label"], style="margin:0;color:#fff;"),
-            core_ui.span(f"{_pts(t['earned'])} / {_pts(t['possible'])} pts · "
-                         f"{len(t['met'])} of {n_total} recommendations complete",
+            core_ui.span(f"{t['n_done']} of {t['n_total']} questions in place{partial} · "
+                         f"{len(t['met'])} of {n_recs} recommendations complete",
                          style="color:#fff;opacity:0.9;font-size:0.9em;"),
             style="display:flex;justify-content:space-between;align-items:baseline;"
                   "flex-wrap:wrap;gap:8px;margin-bottom:6px;"),
@@ -1206,19 +1216,19 @@ def _plan_summary(ev, te, tp, ctx):
     overall = te / tp * 100 if tp else 0
     yn = lambda k: "Yes" if str(ctx.get(k, "yes")).lower() != "no" else "No"
     head = [core_ui.tags.th("Tier"), core_ui.tags.th("Progress", style="min-width:180px;"),
-            core_ui.tags.th("Points", style="text-align:center;"),
-            core_ui.tags.th("Complete", style="text-align:center;")]
+            core_ui.tags.th("Recommendations complete", style="text-align:center;")]
     head += [core_ui.tags.th(f"D{d}", style="text-align:center;") for d in DOMAIN_ITEMS]
     rows = []
     for t in ev["tiers"]:
-        cells = [core_ui.tags.td(core_ui.strong(t["label"])), core_ui.tags.td(_progress(t["pct"])),
-                 core_ui.tags.td(f"{_pts(t['earned'])}/{_pts(t['possible'])}", style="text-align:center;"),
-                 core_ui.tags.td(f"{len(t['met'])}/{len(t['met']) + len(t['gaps'])}",
+        cells = [core_ui.tags.td(core_ui.strong(t["label"])),
+                 core_ui.tags.td(_progress(t["pct"])),
+                 core_ui.tags.td(f"{len(t['met'])} / {len(t['met']) + len(t['gaps'])}",
                                  style="text-align:center;")]
         for d in DOMAIN_ITEMS:
-            e, p = t["by_domain"].get(d, (0.0, 0.0))
-            cells.append(_pct_cell(e / p * 100, title=f"{_pts(e)}/{_pts(p)} pts") if p
-                         else core_ui.tags.td("—", style="text-align:center;color:#999;"))
+            done, total = t["by_domain"].get(d, (0, 0))
+            cells.append(_pct_cell(done / total * 100,
+                                   title=f"{done} of {total} questions in place or partial")
+                         if total else core_ui.tags.td("—", style="text-align:center;color:#999;"))
         rows.append(core_ui.tags.tr(*cells))
     return core_ui.div(
         core_ui.p(core_ui.strong("Overall G-ASET score: "), f"{te:g} / {tp:g} ({overall:.0f}%)",
@@ -1227,9 +1237,9 @@ def _plan_summary(ev, te, tp, ctx):
                                      f"electronic data sources: {yn('ehr')}", class_="text-muted")),
         core_ui.tags.table(core_ui.tags.thead(core_ui.tags.tr(*head)), core_ui.tags.tbody(*rows),
                            class_="table table-sm table-bordered align-middle"),
-        core_ui.tags.small("Tier progress = G-ASET points earned ÷ points possible for the practices "
-                           "in that tier (context-excluded practices omitted). Hover a domain cell "
-                           "for points.", class_="text-muted"))
+        core_ui.tags.small("Progress = questions with the practice fully or partially in place ÷ "
+                           "questions in that tier (questions excluded by context are omitted). "
+                           "Hover a domain cell for counts.", class_="text-muted"))
 # ---------- Language detection ----------
 def detect_language(text):
     sample = text[:6000]
