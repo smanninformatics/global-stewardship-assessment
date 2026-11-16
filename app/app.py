@@ -1229,7 +1229,7 @@ def _plan_summary(ev, te, tp, ctx):
         for d in DOMAIN_ITEMS:
             done, total = t["by_domain"].get(d, (0, 0))
             cells.append(_pct_cell(done / total * 100,
-                                   title=f"{done} of {total} recomendations in place or partial")
+                                   title=f"{done} of {total} recommendations in place or partial")
                          if total else core_ui.tags.td("—", style="text-align:center;color:#999;"))
         rows.append(core_ui.tags.tr(*cells))
     return core_ui.div(
@@ -1239,8 +1239,8 @@ def _plan_summary(ev, te, tp, ctx):
                                      f"electronic data sources: {yn('ehr')}", class_="text-muted")),
         core_ui.tags.table(core_ui.tags.thead(core_ui.tags.tr(*head)), core_ui.tags.tbody(*rows),
                            class_="table table-sm table-bordered align-middle"),
-        core_ui.tags.small("Progress = questions with the practice fully or partially in place ÷ "
-                           "questions in that tier (questions excluded by context are omitted). "
+        core_ui.tags.small("Progress = recommendations with the practice fully or partially in place ÷ "
+                           "recommendations in that tier (questions excluded by context are omitted). "
                            "Hover a domain cell for counts.", class_="text-muted"))
 # ---------- Language detection ----------
 def detect_language(text):
