@@ -11,13 +11,14 @@ AUTHORING RULES (four-tier engine)
   items=     G-ASET practices covered by this recommendation (comma-separated):
                31          whole item (rubric points earned / 5)
                4@0-2.5     slice of an item's points (item 4 is split across tiers)
-               35:DJL      item 35 activities by letter (each worth 5/18 pt for tier progress)
+               35:D        a single item-35 activity by letter (each worth 5/18 pt for tier
+                           progress); each 35A activity gets its own recommendation
                6C          stewardship team leader designated (read from 6C fields)
   needs=     micro and/or ehr — hidden (and excluded from tier progress) when the
              matching context question is answered "No".
   met_if= / show_if=   Optional custom expressions (& = and, | = or).
-  Body: first line "### Title", then the recommended action. For item 35 rules, list
-  activities as "- **X.** text" so already-conducted activities can be filtered out.
+  Body: first line "### Title", then the recommended action. For item 35 rules, state the
+  activity as "- **X.** text" so the activity letter stays visible in exports.
   Every G-ASET item / item-35 activity must appear exactly once (checked at load).
 -->
 
@@ -102,11 +103,19 @@ Create a process to review and update infectious diseases treatment guidelines p
 ### Use the facility antibiogram to inform treatment guidelines
 Use the healthcare facility antibiogram to guide selection of a first-line empiric antibiotic and alternatives when developing the infectious diseases treatment guidelines. Modify recommendations based on significant changes in antibiotic susceptibility patterns.
 
-@@rec id=CE-35 tier=core_essential items=35:DJL
-### Implement core stewardship interventions
-Consider implementation of the following antibiotic stewardship actions:
+@@rec id=CE-35D tier=core_essential items=35:D
+### Convert intravenous antibiotics to oral formulations
+Consider implementation of the following antibiotic stewardship action:
 - **D.** Intravenous to oral antibiotic formulation conversion
+
+@@rec id=CE-35J tier=core_essential items=35:J
+### Assess and clarify documented antibiotic allergies
+Consider implementation of the following antibiotic stewardship action:
 - **J.** Assessment and clarification of documented antibiotic allergies
+
+@@rec id=CE-35L tier=core_essential items=35:L
+### Alert prescribers to duplicative antibiotic coverage
+Consider implementation of the following antibiotic stewardship action:
 - **L.** Alerts to prescribers about potentially duplicative antibiotic coverage (e.g., double anti-anaerobic coverage)
 
 @@rec id=CE-36 tier=core_essential items=36
@@ -182,15 +191,31 @@ Ensure the clinical microbiology laboratory used by your healthcare facility mai
 ### Implement laboratory quality control
 Implement a quality control system in the clinical microbiology laboratory.
 
-@@rec id=CS-35 tier=core_standard items=35:EGMOR
-### Implement standard stewardship interventions
-Consider implementation of the following antibiotic stewardship actions:
+@@rec id=CS-35E tier=core_standard items=35:E
+### Conduct prospective audit and feedback
+Consider implementation of the following antibiotic stewardship action:
 - **E.** Prospective audit and feedback of specified antibiotics: review of courses of therapy for these antibiotics to be evaluated for appropriateness (e.g., concordance with treatment guidelines), followed by regular feedback on use of the agent to the prescribing clinician
+
+@@rec id=CS-35G tier=core_standard items=35:G
+### Restrict antibiotics through formulary approval
+Consider implementation of the following antibiotic stewardship action:
 - **G.** Restricted use of antibiotics based on formulary approval for prespecified conditions or populations: clinicians are unable to prescribe certain antibiotics to certain types of patients
-- **M.** Alerts to prescribers about drug-drug interactions with antimicrobials
-- **O.** Management of antibiotic shortages/stockouts (communicate shortages/stockouts and develop plan of action such as recommendation of alternative agents)
+
+@@rec id=CS-35M tier=core_standard items=35:M
+### Alert prescribers to antibiotic drug-drug interactions
+Consider implementation of the following antibiotic stewardship action:
+- **M.** Alerts to prescribers about drug-drug interactions with antibiotics
+<!-- SME note: drug-drug interactions — wording changed from "antimicrobials" to "antibiotics". -->
+
+@@rec id=CS-35O tier=core_standard items=35:O
+### Manage antibiotic shortages and stockouts
+Consider implementation of the following antibiotic stewardship action:
+- **O.** Management of antibiotic shortages/stockouts (communicate shortages/stockouts and develop a plan of action, such as recommendation of alternative agents)
+
+@@rec id=CS-35R tier=core_standard items=35:R
+### Run awareness campaigns on responsible antibiotic use
+Consider implementation of the following antibiotic stewardship action:
 - **R.** Awareness campaigns on responsible use of antibiotics
-<!-- SME note: drug-drug interactions — add "with antibiotic"; add more detail to "manage antibiotic shortages" (communicate and develop action plan). -->
 
 @@rec id=CS-37 tier=core_standard items=37
 ### Produce a stewardship activity report
@@ -235,9 +260,9 @@ Develop and aggregate a facility antibiogram and regularly update it (e.g., annu
 Assign an office or physical space for the antibiotic stewardship team to perform daily activities.
 <!-- SME note: Categorized as foundational but rated low impact / high resource — moved to Tier 3. -->
 
-@@rec id=E-35 tier=enhancement items=35:P
-### Implement pharmacist-assisted dosing
-Consider implementation of the following antibiotic stewardship actions:
+@@rec id=E-35P tier=enhancement items=35:P
+### Provide pharmacist-assisted dosing in renal or liver dysfunction
+Consider implementation of the following antibiotic stewardship action:
 - **P.** Pharmacist-assisted or clinical pharmacologist-assisted dosing of antibiotics in patients with renal or liver dysfunction
 
 @@rec id=E-38 tier=enhancement items=38
@@ -303,19 +328,52 @@ Provide training on antibiotic stewardship to students or trainees on rotation.
 ### Educate patients and families about antibiotics
 Provide patients and/or families with education about antibiotics.
 
-@@rec id=AE-35 tier=advanced_enhancement items=35:ABCFHIKNQ
-### Implement advanced stewardship interventions
-Consider implementation of the following antibiotic stewardship actions:
+@@rec id=AE-35A tier=advanced_enhancement items=35:A
+### Implement automatic antibiotic stop orders
+Consider implementation of the following antibiotic stewardship action:
 - **A.** Antibiotic automatic stops (e.g., 24 hours for surgical prophylaxis): antibiotics are stopped automatically after a predefined time period according to indication regardless of physician order
+<!-- SME note: For automatic stops — give range of examples. -->
+
+@@rec id=AE-35B tier=advanced_enhancement items=35:B
+### Introduce antibiotic “time outs”
+Consider implementation of the following antibiotic stewardship action:
 - **B.** Antibiotic "time outs" (e.g., at 48 hours a clinician is prompted to review any empiric IV antibiotic therapy): defined, regular prompts to the clinician to re-evaluate antibiotic choices
+
+@@rec id=AE-35C tier=advanced_enhancement items=35:C
+### Send antibiotic reminders at the time of prescribing
+Consider implementation of the following antibiotic stewardship action:
 - **C.** Antibiotic reminders: alerts at the time of prescribing that are tied to a particular antibiotic
+<!-- SME note: "Antibiotic reminders" meets criteria for a Tier 5 designation but is the only such element, so converted to Tier 4. -->
+
+@@rec id=AE-35F tier=advanced_enhancement items=35:F
+### Require prior authorization of specified antibiotics
+Consider implementation of the following antibiotic stewardship action:
 - **F.** Prior authorization of specified antibiotics: requires clinicians to obtain timely approval from experts (e.g., trained physicians or pharmacists) before these antibiotics get dispensed
+
+@@rec id=AE-35H tier=advanced_enhancement items=35:H
+### Share peer comparisons on antibiotic prescribing
+Consider implementation of the following antibiotic stewardship action:
 - **H.** Peer comparisons on antibiotic prescribing: reports including individual-level antibiotic prescribing for all clinicians within a predefined group are developed and shared
+
+@@rec id=AE-35I tier=advanced_enhancement items=35:I
+### Hold in-person antibiotic stewardship rounds
+Consider implementation of the following antibiotic stewardship action:
 - **I.** In-person antibiotic stewardship clinical rounds: rounds held on a regular basis to review and discuss antibiotic choices and ensure accordance with best practice guidelines
+
+@@rec id=AE-35K tier=advanced_enhancement items=35:K
+### Review outpatient parenteral antibiotic therapy before discharge
+Consider implementation of the following antibiotic stewardship action:
 - **K.** Review of outpatient parenteral antibiotic therapy prior to discharge
+
+@@rec id=AE-35N tier=advanced_enhancement items=35:N
+### Optimize antibiotic dosing using pharmacokinetic and pharmacodynamic parameters
+Consider implementation of the following antibiotic stewardship action:
 - **N.** Dose optimization based on pharmacokinetic and pharmacodynamic parameters for treatment of organisms with reduced antibiotic susceptibility
+
+@@rec id=AE-35Q tier=advanced_enhancement items=35:Q
+### Monitor drug levels for antibiotics with a narrow therapeutic index
+Consider implementation of the following antibiotic stewardship action:
 - **Q.** Therapeutic drug monitoring of antibiotics with narrow therapeutic index (e.g., vancomycin, aminoglycosides)
-<!-- SME note: For automatic stops — give range of examples. "Antibiotic reminders" meets criteria for a Tier 5 designation but is the only such element, so converted to Tier 4. -->
 
 @@rec id=AE-41 tier=advanced_enhancement items=41
 ### Provide restricted-antibiotic approval throughout the workday

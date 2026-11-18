@@ -797,8 +797,15 @@ def _eval_component(c, per_item, special):
         done = [a for a in c["acts"] if flags[ACT_LETTERS.index(a)]]
         k, tot = len(done), len(c["acts"])
         status = "met" if k == tot else ("partial" if k else "not_met")
+        if tot == 1:
+            a = c["acts"][0]
+            name = THIRTYFIVE_LABELS[ACT_LETTERS.index(a)]
+            label = (f"35A · {a}. {name if len(name) <= 70 else name[:69] + '…'} — "
+                     + ("routinely conducted" if k else "not routinely conducted"))
+        else:
+            label = f"35A · activities {', '.join(c['acts'])}: {k} of {tot} routinely conducted"
         return dict(c, earned=k * ACT_POINTS, possible=tot * ACT_POINTS, status=status, done=done,
-                    label=f"35A · activities {', '.join(c['acts'])}: {k} of {tot} routinely conducted")
+                    label=label)
     e, p = per_item.get(n, (None, MAX_PER_ITEM))
     e, p = (e or 0.0), (p or MAX_PER_ITEM)
     if c["kind"] == "slice":
@@ -878,26 +885,23 @@ def evaluate_tiers(per_item, special, ctx, template_text):
     for key, label in meta["tiers"]:
         trs = [r for r in evaluated if r["tier"] == key]
         vis = [r for r in trs if r["outcome"] != "hidden"]
-        comps = [c for r in vis for c in r["comps"]]
-        n_total = len(comps)
-        n_met = sum(1 for c in comps if c["status"] == "met")
-        n_partial = sum(1 for c in comps if c["status"] == "partial")
-        n_done = n_met + n_partial
+        # Progress counts completed recommendations only; partial ones do not contribute.
+        n_total = len(vis)
+        n_met = sum(1 for r in vis if r["outcome"] == "met")
+        n_partial = sum(1 for r in vis if r["outcome"] == "partial")
 
-        by_dom = {}                                   # domain -> [done, total]
-        for c in comps:
-            d = ITEM_DOMAIN.get(c["item"])
-            if d is not None:
-                acc = by_dom.setdefault(d, [0, 0])
-                acc[1] += 1
-                if c["status"] in ("met", "partial"):
-                    acc[0] += 1
+        by_dom = {}                                   # domain -> [complete, total]
+        for r in vis:
+            acc = by_dom.setdefault(r["domain"], [0, 0])
+            acc[1] += 1
+            if r["outcome"] == "met":
+                acc[0] += 1
 
         order = lambda r: (r["domain"], r["id"])
         tiers.append({
             "key": key, "label": label,
-            "n_total": n_total, "n_done": n_done, "n_met": n_met, "n_partial": n_partial,
-            "pct": n_done / n_total * 100 if n_total else 0.0,
+            "n_total": n_total, "n_met": n_met, "n_partial": n_partial,
+            "pct": n_met / n_total * 100 if n_total else 0.0,
             "gaps": sorted([r for r in vis if r["outcome"] != "met"], key=order),
             "met": sorted([r for r in vis if r["outcome"] == "met"], key=order),
             "hidden": sorted([r for r in trs if r["outcome"] == "hidden"], key=order),
@@ -934,7 +938,8 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
            f"- **Overall G-ASET score:** {te:g} / {tp:g} ({overall:.0f}%)",
            f"- **Context:** clinical microbiology laboratory access: **{yn('micro')}** · "
            f"electronic data sources: **{yn('ehr')}**",
-           f"- *Tier progress = recommendations fully or partially in place ÷ recommendations in the tier.*", "",
+           f"- *Tier progress = completed recommendations ÷ recommendations in the tier; "
+           f"partially in place does not count toward progress.*", "",
            "| Tier | Progress | Recommendations complete | "
            + " | ".join(f"D{d}" for d in DOMAIN_ITEMS) + " |",
            "|---|---|---|" + "---|" * len(DOMAIN_ITEMS)]
@@ -944,15 +949,15 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
             done, total = t["by_domain"].get(d, (0, 0))
             doms.append(f"{done / total * 100:.0f}%" if total else "—")
         out.append(f"| {t['label']} | `{_text_bar(t['pct'], 10)}` {t['pct']:.0f}% | "
-                   f"{len(t['met'])}/{len(t['met']) + len(t['gaps'])} | " + " | ".join(doms) + " |")
+                   f"{t['n_met']}/{t['n_total']} | " + " | ".join(doms) + " |")
     out.append("")
 
     for t in ev["tiers"]:
-        partial = f" ({t['n_partial']} partial)" if t["n_partial"] else ""
-        out += [f"## {t['label']} — {t['pct']:.0f}% in place", "",
-                f"`{_text_bar(t['pct'])}` {t['n_done']} of {t['n_total']} recommendations in place{partial}", ""]
+        partial = f" · {t['n_partial']} partially in place" if t["n_partial"] else ""
+        out += [f"## {t['label']} — {t['pct']:.0f}% complete", "",
+                f"`{_text_bar(t['pct'])}` {t['n_met']} of {t['n_total']} recommendations complete{partial}", ""]
         if not t["gaps"]:
-            out += ["_All recommendations in this tier are in place._", ""]
+            out += ["_All recommendations in this tier are complete._", ""]
         for r in t["gaps"]:
             is_partial = r["outcome"] == "partial"
             flag = "🟠 PARTIALLY IN PLACE" if is_partial else "🔴 NOT IN PLACE"
@@ -1150,13 +1155,11 @@ def _progress(pct, dark=False, height=14):
         style="display:flex;align-items:center;gap:8px;")
 
 def _tier_banner(t):
-    n_recs = len(t["met"]) + len(t["gaps"])
-    partial = f" ({t['n_partial']} partial)" if t["n_partial"] else ""
+    partial = f" · {t['n_partial']} partially in place" if t["n_partial"] else ""
     return core_ui.div(
         core_ui.div(
             core_ui.h4(t["label"], style="margin:0;color:#fff;"),
-            core_ui.span(f"{t['n_done']} of {t['n_total']} recommendations in place{partial} · "
-                         f"{len(t['met'])} of {n_recs} recommendations complete",
+            core_ui.span(f"{t['n_met']} of {t['n_total']} recommendations complete{partial}",
                          style="color:#fff;opacity:0.9;font-size:0.9em;"),
             style="display:flex;justify-content:space-between;align-items:baseline;"
                   "flex-wrap:wrap;gap:8px;margin-bottom:6px;"),
@@ -1224,12 +1227,12 @@ def _plan_summary(ev, te, tp, ctx):
     for t in ev["tiers"]:
         cells = [core_ui.tags.td(core_ui.strong(t["label"])),
                  core_ui.tags.td(_progress(t["pct"])),
-                 core_ui.tags.td(f"{len(t['met'])} / {len(t['met']) + len(t['gaps'])}",
+                 core_ui.tags.td(f"{t['n_met']} / {t['n_total']}",
                                  style="text-align:center;")]
         for d in DOMAIN_ITEMS:
             done, total = t["by_domain"].get(d, (0, 0))
             cells.append(_pct_cell(done / total * 100,
-                                   title=f"{done} of {total} recommendations in place or partial")
+                                   title=f"{done} of {total} recommendations complete")
                          if total else core_ui.tags.td("—", style="text-align:center;color:#999;"))
         rows.append(core_ui.tags.tr(*cells))
     return core_ui.div(
@@ -1239,9 +1242,10 @@ def _plan_summary(ev, te, tp, ctx):
                                      f"electronic data sources: {yn('ehr')}", class_="text-muted")),
         core_ui.tags.table(core_ui.tags.thead(core_ui.tags.tr(*head)), core_ui.tags.tbody(*rows),
                            class_="table table-sm table-bordered align-middle"),
-        core_ui.tags.small("Progress = recommendations with the practice fully or partially in place ÷ "
-                           "recommendations in that tier (questions excluded by context are omitted). "
-                           "Hover a domain cell for counts.", class_="text-muted"))
+        core_ui.tags.small("Progress = completed recommendations ÷ recommendations in that tier "
+                           "(recommendations excluded by context are omitted). Partially in place "
+                           "does not count toward progress. Hover a domain cell for counts.",
+                           class_="text-muted"))
 # ---------- Language detection ----------
 def detect_language(text):
     sample = text[:6000]
@@ -2438,7 +2442,7 @@ with ui.navset_card_tab(id="main_tabs"):
                             tier_parts.extend(_rec_card(r, entry(r)) for r in t["gaps"])
                         else:
                             tier_parts.append(core_ui.p(
-                                "✅ All recommendations in this tier are in place.",
+                                "✅ All recommendations in this tier are complete.",
                                 class_="ap-tier-allmet", style="color:#2e7d32;font-weight:600;"))
                         if t["met"]:
                             tier_parts.append(core_ui.tags.details(
