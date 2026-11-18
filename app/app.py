@@ -704,6 +704,9 @@ BLANK = "blank"
 def _pts(x):
     return f"{round(x, 1):g}"
 
+def _domain_name(d):
+    return f"Domain {d}" if d else "Cross-cutting"
+
 def _parse_components(spec):
     comps, bad = [], []
     for tok in [t.strip().upper() for t in spec.split(",") if t.strip()]:
@@ -962,14 +965,14 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
             is_partial = r["outcome"] == "partial"
             flag = "🟠 PARTIALLY IN PLACE" if is_partial else "🔴 NOT IN PLACE"
             title = f"Strengthen: {r['title']}" if is_partial else r["title"]
-            out += [f"### `[D{r['domain']} · {flag}]` {title}", "",
+            out += [f"### `[{_domain_name(r['domain'])} · {flag}]` {title}", "",
                     "> **Current status:** " + " · ".join(
                         f"{COMP_STATUS[c['status']]} {c['label']} "
                         f"({_pts(c['earned'])}/{_pts(c['possible'])} pts)" for c in r["comps"]),
                     "", _rec_body(r), ""]
         if t["met"]:
             out += [f"#### ✅ Already in place ({len(t['met'])})", ""]
-            out += [f"- {r['title']} (D{r['domain']})" for r in t["met"]] + [""]
+            out += [f"- {r['title']} ({_domain_name(r['domain'])})" for r in t["met"]] + [""]
         if t["hidden"]:
             out += [f"#### 🚫 Not applicable in this context ({len(t['hidden'])})", ""]
             out += [f"- {r['title']} — {r['reason']}" for r in t["hidden"]] + [""]
@@ -1199,8 +1202,7 @@ def _rec_card(r, entry=None):
                               f"({_pts(c['earned'])}/{_pts(c['possible'])} pts)",
                               style="font-size:0.85em;") for c in r["comps"]]
     header = core_ui.div(
-        core_ui.div(_chip(f"D{r['domain']}", "#455a64"), _chip(label, col),
-                    _chip(r["id"], "#eceff1", "#37474f")),
+        core_ui.div(_chip(_domain_name(r["domain"]), "#455a64"), _chip(label, col)),
         core_ui.input_checkbox(f"ap_sel_{_sid(r['id'])}", "Add to my plan", value=selected)
         if selectable else None,
         style="display:flex;justify-content:space-between;align-items:flex-start;"

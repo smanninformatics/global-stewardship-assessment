@@ -1,7 +1,7 @@
 @@meta
 version: 2026-09 (DRAFT — four-tier model; pending SME validation & local guideline alignment)
 maintainers: AMS/IPC SME working group
-tiers: core_essential=Core Essential | core_standard=Core Standard | enhancement=Enhancement | advanced_enhancement=Advanced Enhancement
+tiers: core_essential= Tier 1: Core Essential | core_standard=Tier 2: Core Standard | enhancement=Tier 3: Enhancement | advanced_enhancement=Tier 4: Advanced Enhancement
 @@endmeta
 
 <!--
