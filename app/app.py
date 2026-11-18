@@ -1224,18 +1224,12 @@ def _plan_summary(ev, te, tp, ctx):
     yn = lambda k: "Yes" if str(ctx.get(k, "yes")).lower() != "no" else "No"
     head = [core_ui.tags.th("Tier"), core_ui.tags.th("Progress", style="min-width:180px;"),
             core_ui.tags.th("Recommendations complete", style="text-align:center;")]
-    head += [core_ui.tags.th(f"D{d}", style="text-align:center;") for d in DOMAIN_ITEMS]
     rows = []
     for t in ev["tiers"]:
         cells = [core_ui.tags.td(core_ui.strong(t["label"])),
                  core_ui.tags.td(_progress(t["pct"])),
                  core_ui.tags.td(f"{t['n_met']} / {t['n_total']}",
                                  style="text-align:center;")]
-        for d in DOMAIN_ITEMS:
-            done, total = t["by_domain"].get(d, (0, 0))
-            cells.append(_pct_cell(done / total * 100,
-                                   title=f"{done} of {total} recommendations complete")
-                         if total else core_ui.tags.td("—", style="text-align:center;color:#999;"))
         rows.append(core_ui.tags.tr(*cells))
     return core_ui.div(
         core_ui.p(core_ui.strong("Overall G-ASET score: "), f"{te:g} / {tp:g} ({overall:.0f}%)",
@@ -1246,8 +1240,7 @@ def _plan_summary(ev, te, tp, ctx):
                            class_="table table-sm table-bordered align-middle"),
         core_ui.tags.small("Progress = completed recommendations ÷ recommendations in that tier "
                            "(recommendations excluded by context are omitted). Partially in place "
-                           "does not count toward progress. Hover a domain cell for counts.",
-                           class_="text-muted"))
+                           "does not count toward progress.", class_="text-muted"))
 # ---------- Language detection ----------
 def detect_language(text):
     sample = text[:6000]
