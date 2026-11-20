@@ -1872,7 +1872,7 @@ def _process_pdf(file_info, lang_choice):
                          if re.fullmatch(cfg["yes"], c, re.IGNORECASE)), "Yes"),
             "partial": cfg["partial"],
             "no": cfg["no"],
-            BLANK: f"— {cfg.get('ui_blank', 'Not answered')}",
+            BLANK: f" {cfg.get('ui_blank', 'Not answered')}",
         }
         domains, nq = [], 0
         for dnum, items in DOMAIN_ITEMS.items():
@@ -2261,26 +2261,7 @@ with ui.navset_card_tab(id="main_tabs"):
                 )
         core_ui.div(id="dynamic_form_container")
 
-        with ui.card():
-                    ui.card_header("🧩 Table items scored from the PDF (6A, 35A)")
         
-                    @render.ui
-                    def special_view():
-                        special = pdf_special.get()
-                        per, _, _, _ = all_scores()
-                        if not parsed_domains.get():
-                            return core_ui.p("Upload a recognized G-ASET PDF to see these.", class_="text-muted")
-                        e6, _ = per.get(6, (None, None))
-                        e35, _ = per.get(35, (None, None))
-                        roles = [SIX_A_LABELS[i] for i in special.get(6, [])]
-                        n35 = special.get(35, 0)
-                        return core_ui.TagList(
-                            core_ui.p(core_ui.strong("Item 6A "), f"→ {e6:g} / 5" if e6 is not None else "—",
-                                      core_ui.tags.br(),
-                                      core_ui.tags.small(f"Selected roles: {', '.join(roles) if roles else 'none'}")),
-                            core_ui.p(core_ui.strong("Item 35A "), f"→ {e35:g} / 5" if e35 is not None else "—",
-                                      core_ui.tags.br(),
-                                      core_ui.tags.small(f"'Yes' responses in 35A column: {n35} / 18")))
 
     # ---------------- Tab 2: Scores ----------------
     with ui.nav_panel("📊 Scores", value = "score"):
