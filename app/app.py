@@ -2261,7 +2261,7 @@ with ui.navset_card_tab(id="main_tabs"):
                 )
         core_ui.div(id="dynamic_form_container")
 
-
+        
 
     # ---------------- Tab 2: Scores ----------------
     with ui.nav_panel("📊 Scores", value = "score"):
