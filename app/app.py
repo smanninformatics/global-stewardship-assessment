@@ -2253,8 +2253,8 @@ with ui.navset_card_tab(id="main_tabs"):
                     core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
                             core_ui.strong("Pages: "), str(meta["pages"]), " | ",
                             core_ui.strong("Size: "), f"{meta['size']:,} bytes"),
-                    core_ui.p(cfg["ui_parsed"].format(nq=meta.get("n_questions", 0), lang=meta["lang"])),
-                    core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."),
+                    #core_ui.p(cfg["ui_parsed"].format(nq=meta.get("n_questions", 0), lang=meta["lang"])),
+                    #core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."),
                     core_ui.p(f"⚠️ {n_blank} Yes/Partial/No item(s) were blank in the PDF. They are marked "
                             f"“Not answered” (gray badge) and score 0.",
                             style="color:#ef6c00;font-weight:600;") if n_blank else None,
