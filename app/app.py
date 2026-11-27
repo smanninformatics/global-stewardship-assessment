@@ -1168,8 +1168,7 @@ def _tier_banner(t):
             core_ui.span(status,
                          style="color:#fff;opacity:0.9;font-size:0.9em;"),
             style="display:flex;justify-content:space-between;align-items:baseline;"
-                  "flex-wrap:wrap;gap:8px;margin-bottom:6px;"),
-        _progress(t["pct"], dark=True),
+                  "flex-wrap:wrap;gap:8px;"),
         style=f"background:{TIER_COLORS.get(t['key'], '#37474f')};padding:12px 16px;"
               f"border-radius:8px;margin:20px 0 10px 0;break-after:avoid;{_PRINT_EXACT}")
 
@@ -2343,8 +2342,14 @@ with ui.navset_card_tab(id="main_tabs"):
                 ui.input_switch("ap_show_completed", "Expand completed recommendations", False)
                 core_ui.tags.small("Recommendations that depend on a resource answered “No” are "
                                    "hidden and excluded from tier progress.", class_="text-muted")
+
+                @render.download(label="⬇️ Download full action plan (.md)",
+                                 filename="gaset_action_plan.md")
+                def download_action_plan():
+                    yield action_plan_md()
+
                 core_ui.tags.hr()
-                core_ui.h6("📝 My action plan")
+                core_ui.h6("📝 Customized action plan")
 
                 @render.ui
                 def ap_plan_status():
@@ -2366,13 +2371,13 @@ with ui.navset_card_tab(id="main_tabs"):
 
                 ui.input_switch("ap_only_selected", "Show only my selected recommendations", False)
 
-                @render.download(label="⬇️ My plan (.md)",
+                @render.download(label="⬇️ My customized action plan (.md)",
                                  filename=lambda: f"gaset_custom_plan_{date.today().isoformat()}.md")
                 def download_custom_plan_md():
                     yield build_custom_plan_md(action_plan_eval(), plan_store.get(),
                                                facility=(input.ctx_facility() or "").strip())
 
-                @render.download(label="⬇️ My plan (.csv)",
+                @render.download(label="⬇️ My customized action plan (.csv)",
                                  filename=lambda: f"gaset_custom_plan_{date.today().isoformat()}.csv")
                 def download_custom_plan_csv():
                     buf = io.StringIO(); w = csv.writer(buf)
@@ -2392,11 +2397,6 @@ with ui.navset_card_tab(id="main_tabs"):
 
             with ui.card():
                 ui.card_header("🧭 Action Plan")
-
-                @render.download(label="⬇️ Download action plan (.md)",
-                                 filename="gaset_action_plan.md")
-                def download_action_plan():
-                    yield action_plan_md()
 
                 @render.ui
                 def action_plan_view():
