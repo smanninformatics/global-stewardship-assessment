@@ -28,7 +28,7 @@ except ImportError:
     HAS_LANGDETECT = False
 
 
-ui.page_opts(title="G-ASET Multilingual PDF Assessment", fillable=False)
+ui.page_opts(title="Global Antibiotic Stewardship Evaluation Tool: Scoring and Action Plan", fillable=False)
 
 SHOW_DIAGNOSTICS = False   # set True to show the 🔧 Diagnostics tab (AcroForm field map)
 
@@ -943,7 +943,7 @@ def build_action_plan_md(ev, te, tp, facility="", ctx=None):
            f"electronic data sources: **{yn('ehr')}**",
            f"- *Tier progress = completed recommendations ÷ recommendations in the tier; "
            f"partially in place does not count toward progress.*", "",
-           "| Tier | Progress | Recommendations complete | "
+           "| Tier | Progress | Completed Recommendations | "
            + " | ".join(f"D{d}" for d in DOMAIN_ITEMS) + " |",
            "|---|---|---|" + "---|" * len(DOMAIN_ITEMS)]
     for t in ev["tiers"]:
@@ -1223,7 +1223,7 @@ def _plan_summary(ev, te, tp, ctx):
     overall = te / tp * 100 if tp else 0
     yn = lambda k: "Yes" if str(ctx.get(k, "yes")).lower() != "no" else "No"
     head = [core_ui.tags.th("Tier"), core_ui.tags.th("Progress", style="min-width:180px;"),
-            core_ui.tags.th("Recommendations complete", style="text-align:center;")]
+            core_ui.tags.th("Completed Recommendations", style="text-align:center;")]
     rows = []
     for t in ev["tiers"]:
         cells = [core_ui.tags.td(core_ui.strong(t["label"])),
@@ -1238,9 +1238,8 @@ def _plan_summary(ev, te, tp, ctx):
                                      f"electronic data sources: {yn('ehr')}", class_="text-muted")),
         core_ui.tags.table(core_ui.tags.thead(core_ui.tags.tr(*head)), core_ui.tags.tbody(*rows),
                            class_="table table-sm table-bordered align-middle"),
-        core_ui.tags.small("Progress = completed recommendations ÷ recommendations in that tier "
-                           "(recommendations excluded by context are omitted). Partially in place "
-                           "does not count toward progress.", class_="text-muted"))
+        core_ui.tags.small("Progress = % of recommendations within " \
+        "                   the tier that have been fully implemented", class_="text-muted"))
 # ---------- Language detection ----------
 def detect_language(text):
     sample = text[:6000]
@@ -2253,8 +2252,6 @@ with ui.navset_card_tab(id="main_tabs"):
                     core_ui.p(core_ui.strong("File: "), meta["name"], " | ",
                             core_ui.strong("Pages: "), str(meta["pages"]), " | ",
                             core_ui.strong("Size: "), f"{meta['size']:,} bytes"),
-                    core_ui.p(cfg["ui_parsed"].format(nq=meta.get("n_questions", 0), lang=meta["lang"])),
-                    core_ui.p(f"📝 {meta.get('n_fields', 0)} AcroForm fields read deterministically by name."),
                     core_ui.p(f"⚠️ {n_blank} Yes/Partial/No item(s) were blank in the PDF. They are marked "
                             f"“Not answered” (gray badge) and score 0.",
                             style="color:#ef6c00;font-weight:600;") if n_blank else None,
