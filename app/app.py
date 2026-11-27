@@ -2349,7 +2349,7 @@ with ui.navset_card_tab(id="main_tabs"):
                     yield action_plan_md()
 
                 core_ui.tags.hr()
-                core_ui.h6("📝 Customized action plan")
+                core_ui.h6("📝 Custom action plan")
 
                 @render.ui
                 def ap_plan_status():
@@ -2371,13 +2371,13 @@ with ui.navset_card_tab(id="main_tabs"):
 
                 ui.input_switch("ap_only_selected", "Show only my selected recommendations", False)
 
-                @render.download(label="⬇️ My customized action plan (.md)",
+                @render.download(label="⬇️ My custom action plan (.md)",
                                  filename=lambda: f"gaset_custom_plan_{date.today().isoformat()}.md")
                 def download_custom_plan_md():
                     yield build_custom_plan_md(action_plan_eval(), plan_store.get(),
                                                facility=(input.ctx_facility() or "").strip())
 
-                @render.download(label="⬇️ My customized action plan (.csv)",
+                @render.download(label="⬇️ My custom action plan (.csv)",
                                  filename=lambda: f"gaset_custom_plan_{date.today().isoformat()}.csv")
                 def download_custom_plan_csv():
                     buf = io.StringIO(); w = csv.writer(buf)
