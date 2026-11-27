@@ -1158,11 +1158,14 @@ def _progress(pct, dark=False, height=14):
         style="display:flex;align-items:center;gap:8px;")
 
 def _tier_banner(t):
-    partial = f" · {t['n_partial']} partially in place" if t["n_partial"] else ""
+    n_not = t["n_total"] - t["n_met"] - t["n_partial"]
+    counts = [f"{n_not} not complete" if n_not else "",
+              f"{t['n_partial']} partially in place" if t["n_partial"] else ""]
+    status = " · ".join(c for c in counts if c) or "All recommendations complete"
     return core_ui.div(
         core_ui.div(
             core_ui.h4(t["label"], style="margin:0;color:#fff;"),
-            core_ui.span(f"{t['n_met']} of {t['n_total']} recommendations complete{partial}",
+            core_ui.span(status,
                          style="color:#fff;opacity:0.9;font-size:0.9em;"),
             style="display:flex;justify-content:space-between;align-items:baseline;"
                   "flex-wrap:wrap;gap:8px;margin-bottom:6px;"),
